@@ -8,7 +8,10 @@
 #include <algorithm>
 #include <chrono>
 #include <cctype>
+#include <ctime>
+#include <iomanip>
 #include <iterator>
+#include <sstream>
 #include <stdexcept>
 #include <utility>
 
@@ -198,7 +201,9 @@ RedisJobStatus::RedisJobStatus(ConfigProvider provider)
 
 RedisJobStatus::Result RedisJobStatus::createPendingJob(
     const string& jobId,
-    const map<string, string>& fields)
+    const map<string, string>& fields,
+    const map<string, string>& serverTypeMetadata,
+    const map<string, string>& serverMetadata)
 {
   if (!m_enabled)
   {
@@ -207,16 +212,48 @@ RedisJobStatus::Result RedisJobStatus::createPendingJob(
   validateIdentifier(m_serverType, "serverType", true);
   validateIdentifier(m_serverId, "serverId");
   validateIdentifier(jobId, "jobId");
+  for (const auto& item : serverTypeMetadata)
+  {
+    if (item.first.empty() || item.first == "createdByServerId" ||
+        item.first == "createdAt")
+      throw invalid_argument("RedisJobStatus: empty or reserved server-type metadata field");
+  }
+  for (const auto& item : serverMetadata)
+  {
+    if (item.first.empty())
+      throw invalid_argument("RedisJobStatus: server metadata field must not be empty");
+  }
+  const auto now = std::time(nullptr);
+  const std::tm* utc = std::gmtime(&now);
+  if (!utc) throw runtime_error("RedisJobStatus: unable to generate metadata timestamp");
+  std::ostringstream timestamp;
+  timestamp << std::put_time(utc, "%Y-%m-%dT%H:%M:%SZ");
+
   const string reference = jobReference(m_serverId, jobId);
   KeyList keys = {
       jobKey(m_serverType, m_serverId, jobId), typeJobsKey(m_serverType),
       serverJobsKey(m_serverType, m_serverId), typeSummaryKey(m_serverType),
       serverSummaryKey(m_serverType, m_serverId)};
-  ArgList args = {jobId, m_serverType, m_serverId, reference};
+  ArgList args = {jobId, m_serverType, m_serverId, reference, "0",
+                   std::to_string(serverTypeMetadata.size()),
+                   std::to_string(serverMetadata.size()), timestamp.str()};
+  int jobFieldCount = 0;
   for (const auto& field : fields)
   {
     if (field.first == "jobId" || field.first == "status" ||
         field.first == "serverType" || field.first == "serverId") continue;
+    args.push_back(field.first);
+    args.push_back(field.second);
+    ++jobFieldCount;
+  }
+  args[4] = std::to_string(jobFieldCount);
+  for (const auto& field : serverTypeMetadata)
+  {
+    args.push_back(field.first);
+    args.push_back(field.second);
+  }
+  for (const auto& field : serverMetadata)
+  {
     args.push_back(field.first);
     args.push_back(field.second);
   }
