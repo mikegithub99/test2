@@ -86,11 +86,16 @@ public:
   /**
    * @brief Creates a PENDING job under this object's configured server identity.
    * @param jobId Original application job ID; preserved unchanged for display.
-   * @param fields Additional display metadata; reserved fields are supplied by the API.
+   * @param fields Additional job display metadata; reserved fields are supplied by the API.
+   * @param serverTypeMetadata Metadata merged into the server-type summary. Unspecified
+   *        existing fields are preserved; createdByServerId and createdAt are reserved.
+   * @param serverMetadata Metadata merged into this server ID's summary.
    */
   Result createPendingJob(
       const std::string& jobId,
-      const std::map<std::string, std::string>& fields = {});
+      const std::map<std::string, std::string>& fields = {},
+      const std::map<std::string, std::string>& serverTypeMetadata = {},
+      const std::map<std::string, std::string>& serverMetadata = {});
 
   /**
    * @brief Transitions a tracked job to ACTIVE or SUSPENDED.
