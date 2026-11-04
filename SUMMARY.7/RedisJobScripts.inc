@@ -95,18 +95,10 @@ for i = 1, typeMetadataCount do
   redis.call('HSET', typeSummaryKey, 'meta:' .. ARGV[cursor], ARGV[cursor + 1])
   cursor = cursor + 2
 end
--- Server-ID metadata is a snapshot, not a merge: replace existing metadata
--- fields when this call supplies a server metadata map. Keep lifecycle counters.
-if serverMetadataCount > 0 then
-  for _, field in ipairs(redis.call('HKEYS', serverSummaryKey)) do
-    if string.sub(field, 1, 5) == 'meta:' then
-      redis.call('HDEL', serverSummaryKey, field)
-    end
-  end
-  for i = 1, serverMetadataCount do
-    redis.call('HSET', serverSummaryKey, 'meta:' .. ARGV[cursor], ARGV[cursor + 1])
-    cursor = cursor + 2
-  end
+-- Server-ID metadata is written when its summary is created; no merge is needed.
+for i = 1, serverMetadataCount do
+  redis.call('HSET', serverSummaryKey, 'meta:' .. ARGV[cursor], ARGV[cursor + 1])
+  cursor = cursor + 2
 end
 if typeSummaryWasMissing then
   redis.call('HSET', typeSummaryKey,
