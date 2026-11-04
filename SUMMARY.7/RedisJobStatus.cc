@@ -3,7 +3,10 @@
  * @brief Implementation of logical Redis job-status APIs.
  */
 
-#include "RedisJobStatus.h"
+#include <cstdint>
+#include <map>
+#include <string>
+#include <vector>
 
 #include <algorithm>
 #include <chrono>
@@ -14,6 +17,8 @@
 #include <sstream>
 #include <stdexcept>
 #include <utility>
+
+#include "RedisJobStatus.h"
 
 using std::back_inserter;
 using std::chrono::seconds;
