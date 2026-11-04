@@ -27,8 +27,10 @@
  *
  * KEYS[1..5] are assigned to jobKey, typeJobsKey, serverJobsKey,
  * typeSummaryKey, and serverSummaryKey, respectively.
- * ARGV[1..4] are jobId, serverType, serverId, and composite reference. Remaining ARGV values are
- * optional metadata field/value pairs.
+ * ARGV[1..4] are jobId, serverType, serverId, and composite reference.
+ * ARGV[5..8] are job-field count, type-metadata count, server-metadata count,
+ * and UTC creation timestamp. Remaining arguments are field/value pairs in that order.
+ * Summary metadata uses meta:<field> hash fields.
  *
  * Returns RESULT_OK (0), RESULT_ALREADY_EXISTS (5), or
  * RESULT_DATA_INCONSISTENT (4).
@@ -66,12 +68,18 @@ local jobId = ARGV[1]
 local serverType = ARGV[2]
 local serverId = ARGV[3]
 local reference = ARGV[4]
-local metadataStart = 5
+local jobFieldCount = tonumber(ARGV[5])
+local typeMetadataCount = tonumber(ARGV[6])
+local serverMetadataCount = tonumber(ARGV[7])
+local createdAt = ARGV[8]
+local typeSummaryWasMissing = redis.call('EXISTS', typeSummaryKey) == 0
 local fields = {'jobId', jobId, 'status', 'PENDING',
                 'serverType', serverType, 'serverId', serverId}
-for i = metadataStart, #ARGV, 2 do
-  table.insert(fields, ARGV[i])
-  table.insert(fields, ARGV[i + 1])
+local cursor = 9
+for i = 1, jobFieldCount do
+  table.insert(fields, ARGV[cursor])
+  table.insert(fields, ARGV[cursor + 1])
+  cursor = cursor + 2
 end
 
 redis.call('HSET', jobKey, unpack(fields))
@@ -81,6 +89,21 @@ redis.call('HINCRBY', typeSummaryKey, 'pending', 1)
 redis.call('HINCRBY', typeSummaryKey, 'total', 1)
 redis.call('HINCRBY', serverSummaryKey, 'pending', 1)
 redis.call('HINCRBY', serverSummaryKey, 'total', 1)
+
+-- Merge supplied metadata while preserving fields not present in this call.
+for i = 1, typeMetadataCount do
+  redis.call('HSET', typeSummaryKey, 'meta:' .. ARGV[cursor], ARGV[cursor + 1])
+  cursor = cursor + 2
+end
+for i = 1, serverMetadataCount do
+  redis.call('HSET', serverSummaryKey, 'meta:' .. ARGV[cursor], ARGV[cursor + 1])
+  cursor = cursor + 2
+end
+if typeSummaryWasMissing then
+  redis.call('HSET', typeSummaryKey,
+    'meta:createdByServerId', serverId,
+    'meta:createdAt', createdAt)
+end
 return RESULT_OK
 )lua";
 
