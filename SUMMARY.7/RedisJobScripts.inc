@@ -282,6 +282,24 @@ return RESULT_OK
  * Returns the SADD result for the type-specific server set. Returns a Redis
  * error reply before writing if either key exists with a type other than SET.
  */
+/**
+ * @brief Initializes server-type metadata without overwriting existing values.
+ *
+ * KEYS[1] is the type summary hash. ARGV[1] is the registering server ID
+ * and ARGV[2] is the UTC creation timestamp. This script touches only the
+ * summary key so it remains valid in Redis Cluster.
+ */
+const char* const kInitializeTypeSummaryMetadataScript = R"lua(
+local summaryKey = KEYS[1]
+local keyType = redis.call('TYPE', summaryKey).ok
+if keyType ~= 'none' and keyType ~= 'hash' then
+  return redis.error_reply('wrong key type')
+end
+redis.call('HSETNX', summaryKey, 'meta:createdByServerId', ARGV[1])
+redis.call('HSETNX', summaryKey, 'meta:createdAt', ARGV[2])
+return 1
+)lua";
+
 const char* const kRegisterServerScript = R"lua(
 local serverTypesKey = KEYS[1]
 local typeServersKey = KEYS[2]
