@@ -56,6 +56,26 @@ class JobDetailsScreen(ModalScreen[None]):
         yield Footer()
 
 
+class MetadataInfoScreen(ModalScreen[None]):
+    """Modal view of metadata attached to a server type or server ID."""
+
+    BINDINGS = [("enter", "dismiss", "Close")]
+    CSS = """MetadataInfoScreen { align: center middle; } #metadata-info { width: 80%; height: auto; max-height: 80%; border: round $accent; padding: 1 2; background: $surface; overflow-y: auto; }"""
+
+    def __init__(self, title: str, metadata: dict[str, str]) -> None:
+        super().__init__()
+        self.title_text = title
+        self.metadata = metadata
+
+    def compose(self) -> ComposeResult:
+        details = self.title_text + "\\n\\n"
+        details += "\\n".join(
+            f"{name}: {value}" for name, value in sorted(self.metadata.items())
+        ) if self.metadata else "(no metadata)"
+        yield Static(details + "\\n\\nPress Enter to close.", id="metadata-info")
+        yield Footer()
+
+
 class DeleteConfirmScreen(ModalScreen[bool]):
     BINDINGS = [("y", "confirm", "Delete"), ("n", "cancel", "Cancel"), ("escape", "cancel", "Cancel")]
     CSS = """DeleteConfirmScreen { align: center middle; } #delete-confirm { width: 80%; height: auto; border: round $error; padding: 1 2; background: $surface; }"""
@@ -81,6 +101,7 @@ class RedisBrowser(App):
         ("4", "faster", "Faster"),
         ("h", "toggle_help", "Help"),
         ("d", "delete_selected", "Delete"),
+        ("i", "show_info", "Info"),
         ("space", "toggle_expand", "Expand / Collapse"),
         ("escape", "collapse", "Collapse"),
         ("q", "quit", "Quit"),
@@ -123,7 +144,7 @@ class RedisBrowser(App):
         yield DataTable(id="table", cursor_type="row", zebra_stripes=True)
         yield Static("Starting…", id="status")
         yield Static(
-            "Click/Enter Select   Space Expand   Esc Collapse   D Delete   1 Refresh   2 Pause   3 Slower   4 Faster   Q Quit",
+            "Click/Enter Select   Space Expand   I Info   Esc Collapse   D Delete   1 Refresh   2 Pause   3 Slower   4 Faster   Q Quit",
             id="controls",
         )
 
@@ -157,22 +178,26 @@ class RedisBrowser(App):
 
         for server_type in server_types:
             type_key = f"summary:type:{{{server_type}}}"
-            type_counters = counter_values(self.client.hgetall(type_key))
+            type_hash = self.client.hgetall(type_key)
+            type_counters = counter_values(type_hash)
+            type_metadata = {k[5:]: v for k, v in type_hash.items() if k.startswith("meta:")}
             server_set_key = f"servers:{{registry}}:type:{server_type}"
             server_ids = sorted(self.client.smembers(server_set_key))
             rows.append((
                 type_key, server_type, *type_counters, 0, None,
-                bool(server_ids),
+                bool(server_ids), type_metadata,
             ))
 
             for server_id in server_ids:
                 server_key = f"summary:server:{{{server_type}}}:{server_id}"
-                server_counters = counter_values(self.client.hgetall(server_key))
+                server_hash = self.client.hgetall(server_key)
+                server_counters = counter_values(server_hash)
+                server_metadata = {k[5:]: v for k, v in server_hash.items() if k.startswith("meta:")}
                 jobs_set_key = f"jobs:server:{{{server_type}}}:{server_id}"
                 references = sorted(self.client.smembers(jobs_set_key))
                 rows.append((
                     server_key, f"SERVER: {server_id}", *server_counters,
-                    1, type_key, bool(references),
+                    1, type_key, bool(references), server_metadata,
                 ))
 
                 for reference in references:
@@ -332,6 +357,19 @@ class RedisBrowser(App):
         if parent_index is not None:
             table.move_cursor(row=parent_index, column=0, animate=False)
         await self.refresh_view()
+
+    async def action_show_info(self) -> None:
+        """Show metadata for the selected server type or server ID."""
+        table = self.table
+        if table is None or not 0 <= table.cursor_row < len(self.last_rows):
+            return
+        row = self.last_rows[table.cursor_row]
+        if row[6] not in (0, 1):
+            return
+        metadata = row[9] if len(row) > 9 else {}
+        title = (f"SERVER TYPE: {row[1]}" if row[6] == 0
+                 else f"SERVER ID: {row[1].removeprefix('SERVER: ')}")
+        self.push_screen(MetadataInfoScreen(title, metadata))
 
     async def action_delete_selected(self) -> None:
         table = self.table
