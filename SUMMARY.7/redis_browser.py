@@ -1,4 +1,4 @@
-"""Counter-focused, read-only browser for the RedisJobStatus .7 keyspace."""
+"""Interactive browser for RedisJobStatus counters and metadata."""
 
 from __future__ import annotations
 
@@ -92,7 +92,7 @@ class DeleteConfirmScreen(ModalScreen[bool]):
 
 class RedisBrowser(App):
     TITLE = "Redis Job Counters (.7)"
-    SUB_TITLE = "Live hierarchy | D deletes with confirmation"
+    SUB_TITLE = "Live hierarchy | D deletes | I shows metadata"
 
     BINDINGS = [
         ("1", "refresh_now", "Refresh"),
