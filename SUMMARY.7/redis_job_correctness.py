@@ -102,7 +102,8 @@ class Audit:
         if actual["total"] != sum(actual[x] for x in FIELDS[:3]):
             self.add("SUMMARY_ARITHMETIC", "total != pending + active + suspended",
                      st=st, sid=sid, key=key)
-        extras = sorted(set(raw) - set(FIELDS))
+        extras = sorted(field for field in set(raw) - set(FIELDS)
+                        if not field.startswith("meta:"))
         if extras:
             self.add("UNKNOWN_SUMMARY_FIELDS", f"Unexpected summary fields: {extras}",
                      "WARNING", st, sid, key=key)
