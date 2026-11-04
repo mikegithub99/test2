@@ -68,11 +68,11 @@ class MetadataInfoScreen(ModalScreen[None]):
         self.metadata = metadata
 
     def compose(self) -> ComposeResult:
-        details = self.title_text + "\\n\\n"
-        details += "\\n".join(
+        details = self.title_text + "\n\n"
+        details += "\n".join(
             f"{name}: {value}" for name, value in sorted(self.metadata.items())
         ) if self.metadata else "(no metadata)"
-        yield Static(details + "\\n\\nPress Enter to close.", id="metadata-info")
+        yield Static(details + "\n\nPress Enter to close.", id="metadata-info")
         yield Footer()
 
 
