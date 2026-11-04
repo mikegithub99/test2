@@ -111,6 +111,12 @@ map<string, int64_t> readCounters(
   map<string, int64_t> counters;
   for (const auto& field : fields)
   {
+    // Summary hashes also contain descriptive metadata; only numeric fields
+    // belong in the counters API.
+    if (field.first.rfind("meta:", 0) == 0)
+    {
+      continue;
+    }
     try
     {
       counters[field.first] = stoll(field.second);
@@ -320,6 +326,26 @@ void RedisJobStatus::registerServer()
       [&](auto& redis)
       {
         return evalResult(redis, kRegisterServerScript, keys, args);
+      });
+
+  // Initialize type metadata independently: the registry keys use the
+  // {registry} hash tag, while this summary key uses {serverType}. Keeping
+  // these as separate operations is required for Redis Cluster compatibility.
+  const auto now = std::time(nullptr);
+  const std::tm* utc = std::gmtime(&now);
+  if (!utc)
+  {
+    throw runtime_error("RedisJobStatus: unable to generate metadata timestamp");
+  }
+  std::ostringstream timestamp;
+  timestamp << std::put_time(utc, "%Y-%m-%dT%H:%M:%SZ");
+  const KeyList summaryKeys = {typeSummaryKey(m_serverType)};
+  const ArgList summaryArgs = {m_serverId, timestamp.str()};
+  m_client->execute(
+      [&](auto& redis)
+      {
+        return evalResult(
+            redis, kInitializeTypeSummaryMetadataScript, summaryKeys, summaryArgs);
       });
 }
 
