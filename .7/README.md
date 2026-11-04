@@ -58,8 +58,8 @@ When enabled, the example injects mock values for `redisUrl` and `isRedisCluster
 |---|---|---|---|
 | SET | `servers:{registry}:types` | Global server-type discovery. | `query`, `order` |
 | SET | `servers:{registry}:type:serverType` | Registered instance IDs for one type. | For `query`: `query-01`, `query-02` |
-| HASH | `summary:type:{serverType}` | Type-level status counters. | `pending=2`, `active=3`, `suspended=1`, `total=6` |
-| HASH | `summary:server:{serverType}:serverId` | Per-instance counters. | For `query-01`: `pending=1`, `active=2`, `total=3` |
+| HASH | `summary:type:{serverType}` | Type-level status counters and metadata. | Counters plus `meta:createdByServerId`, `meta:createdAt`, and custom `meta:<field>` values |
+| HASH | `summary:server:{serverType}:serverId` | Per-instance counters and metadata. | Counters plus custom `meta:<field>` values for the server ID |
 | HASH | `job:{serverType}:<serverId-length>:<serverId>:<jobId>` | Job state, ownership and metadata. | `jobId=job-100`, `status=ACTIVE`, `serverType=query`, `serverId=query-01`, plus custom fields |
 | SET | `jobs:type:{serverType}` | Composite references for current jobs of a type. | `7:query-01:job-100`, `7:query-01:job-101`, `7:query-02:job-100` |
 | SET | `jobs:server:{serverType}:serverId` | Composite references for jobs owned by an instance. | For `query-01`: `7:query-01:job-100`, `7:query-01:job-102` |
@@ -95,6 +95,22 @@ Requires C++17, redis-plus-plus and hiredis. The host application must provide `
 
 ## Fixed server identity and duplicate application IDs
 
-The worker identity is configured once using `RedisJobStatus::Config` or host registry values `redisJobStatusServerType` and `redisJobStatusServerId`. A worker then calls `createPendingJob(jobId, fields)`, `transitionJob(jobId, state)`, `completeJob(jobId)`, `registerServer()`, and `refreshHeartbeat(ttlSeconds)` without repeating identity arguments.
+The worker identity is configured once using `RedisJobStatus::Config` or host registry values `redisJobStatusServerType` and `redisJobStatusServerId`. A worker then calls `createPendingJob(jobId, fields, serverTypeMetadata, serverMetadata)`, `transitionJob(jobId, state)`, `completeJob(jobId)`, `registerServer()`, and `refreshHeartbeat(ttlSeconds)` without repeating identity arguments.
+
+The optional metadata maps are merged into the corresponding summary hashes atomically with job creation. Metadata fields use the `meta:<name>` prefix; supplied values replace matching fields while unspecified fields are preserved. Server-type metadata names `createdByServerId` and `createdAt` are reserved. When a server-type summary hash is first created, the Lua script stores the configured server ID as `meta:createdByServerId` and an ISO-8601 UTC timestamp as `meta:createdAt`. These system fields are never overwritten by later job creations.
+
+Example:
+
+```cpp
+std::map<std::string, std::string> typeMetadata = {
+    {"environment", "production"}, {"owner", "search"}
+};
+std::map<std::string, std::string> serverMetadata = {
+    {"host", "worker-17"}, {"zone", "west"}
+};
+status.createPendingJob("job-100", {}, typeMetadata, serverMetadata);
+```
+
+In the browser, press `i` on a server-type or server-ID row to view its metadata. Press Enter to dismiss the popup.
 
 The storage key uses a length-prefixed composite reference derived from the configured `serverId` and the original `jobId`. Both indexes store that composite reference. The hash field `jobId` remains the original application-generated value, so UI display is unchanged. All related keys retain the `{serverType}` hash tag.
