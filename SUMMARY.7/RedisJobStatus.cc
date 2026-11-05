@@ -243,16 +243,6 @@ RedisJobStatus::Result RedisJobStatus::createPendingJob(
     ++jobFieldCount;
   }
   args[4] = std::to_string(jobFieldCount);
-  for (const auto& field : serverTypeMetadata)
-  {
-    args.push_back(field.first);
-    args.push_back(field.second);
-  }
-  for (const auto& field : serverMetadata)
-  {
-    args.push_back(field.first);
-    args.push_back(field.second);
-  }
   const auto result = m_client->execute([&](auto& redis)
   {
     return evalResult(redis, kCreatePendingScript, keys, args);
