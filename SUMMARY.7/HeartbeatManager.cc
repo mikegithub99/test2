@@ -116,24 +116,152 @@ for i = 1, count do
 end
 
 local function enough(field, decrement)
-  local raw = redis.call('HGET', typeSummary, field) or '0'
+  if decrement == 0 then return true end
+  local raw = redis.call('HGET', typeSummary, field)
+  if not raw or not string.match(raw, '^%d+
+redis.call('SREM', live, serverId)
+-- Keep the terminal DELETING marker: this process ID is never reused.
+-- It prevents a delayed/repeated registerServer() from reactivating the ID.
+return 1
+)lua";
+
+string registryTypesKey() { return "servers:{registry}:types"; }
+string registryServersKey(const string& type)
+{ return "servers:{registry}:type:" + type; }
+string liveKey(const string& type) { return "servers:live:{" + type + "}"; }
+string stateKey(const string& type) { return "servers:state:{" + type + "}"; }
+string heartbeatKey(const string& type, const string& id)
+{ return "heartbeat:server:{" + type + "}:" + id; }
+string serverJobsKey(const string& type, const string& id)
+{ return "jobs:server:{" + type + "}:" + id; }
+string typeJobsKey(const string& type) { return "jobs:type:{" + type + "}"; }
+string serverSummaryKey(const string& type, const string& id)
+{ return "summary:server:{" + type + "}:" + id; }
+string typeSummaryKey(const string& type) { return "summary:type:{" + type + "}"; }
+} // namespace
+
+HeartbeatManager::HeartbeatManager(std::chrono::seconds scanInterval)
+    : m_client(RedisClient::Instance()), m_scanInterval(scanInterval)
+{
+  if (m_scanInterval.count() <= 0)
+    throw std::invalid_argument("HeartbeatManager: scan interval must be positive");
+  m_thread = std::thread(&HeartbeatManager::run, this);
+}
+
+HeartbeatManager::~HeartbeatManager()
+{
+  stop();
+}
+
+void HeartbeatManager::stop()
+{
+  {
+    std::lock_guard<std::mutex> lock(m_mutex);
+    m_stopping = true;
+  }
+  m_wakeup.notify_all();
+  if (m_thread.joinable()) m_thread.join();
+}
+
+void HeartbeatManager::run()
+{
+  std::unique_lock<std::mutex> lock(m_mutex);
+  while (!m_stopping)
+  {
+    lock.unlock();
+    try { scanOnce(); }
+    catch (const std::exception& error)
+    { std::cerr << "Heartbeat cleanup scan failed: " << error.what() << '\n'; }
+    catch (...)
+    { std::cerr << "Heartbeat cleanup scan failed: unknown exception\n"; }
+    lock.lock();
+    m_wakeup.wait_for(lock, m_scanInterval, [this] { return m_stopping; });
+  }
+}
+
+void HeartbeatManager::scanOnce()
+{
+  m_client->execute([&](auto& redis)
+  {
+    vector<string> types;
+    redis.smembers(registryTypesKey(), back_inserter(types));
+
+    for (const auto& type : types)
+    {
+      vector<string> ids;
+      redis.smembers(registryServersKey(type), back_inserter(ids));
+      for (const auto& id : ids)
+      {
+        const string heartbeat = heartbeatKey(type, id);
+        const string state = stateKey(type);
+        if (redis.exists(heartbeat)) continue;
+
+        const vector<string> fenceKeys = {
+            heartbeat, state, serverJobsKey(type, id), serverSummaryKey(type, id), liveKey(type)};
+        const vector<string> fenceArgs = {id};
+        const auto fenced = redis.template eval<int64_t>(
+            kFenceScript, fenceKeys.begin(), fenceKeys.end(),
+            fenceArgs.begin(), fenceArgs.end());
+
+        if (fenced == 0) continue;
+        if (fenced == 2)
+        {
+          // A missing state is a completed Phase A from an earlier pass.
+          // It is safe to finish Phase B because IDs are never reused.
+          redis.srem(registryServersKey(type), id);
+          continue;
+        }
+        if (fenced != 1) continue;
+
+        const string serverJobs = serverJobsKey(type, id);
+        vector<string> refs;
+        redis.smembers(serverJobs, back_inserter(refs));
+
+        vector<string> keys = {
+            liveKey(type), state, heartbeat, serverJobs, typeJobsKey(type),
+            serverSummaryKey(type, id), typeSummaryKey(type)};
+        for (const auto& ref : refs)
+          keys.push_back("job:{" + type + "}:" + ref);
+
+        vector<string> args = {id, std::to_string(refs.size())};
+        for (const auto& ref : refs) args.push_back(ref);
+        args.push_back(type);
+
+        const auto cleaned = redis.template eval<int64_t>(
+            kCleanupScript, keys.begin(), keys.end(), args.begin(), args.end());
+        if (cleaned == 1)
+        {
+          // Registry keys are in the {registry} slot, so this is a separate
+          // command after the per-type Phase A script has committed.
+          redis.srem(registryServersKey(type), id);
+        }
+      }
+    }
+  });
+}
+) then return false end
+  local maxInteger = '9223372036854775807'
+  if #raw > #maxInteger or (#raw == #maxInteger and raw > maxInteger) then
+    return false
+  end
   local value = tonumber(raw)
-  return value and value >= 0 and value == math.floor(value) and value >= decrement
+  return value and value >= decrement
 end
 if not enough('pending', pending) or not enough('active', active) or
    not enough('suspended', suspended) or not enough('total', total) then
   return redis.error_reply('invalid or insufficient type counters')
 end
 
+-- Apply the already-validated counter changes before deleting job artifacts.
+if pending > 0 then redis.call('HINCRBY', typeSummary, 'pending', -pending) end
+if active > 0 then redis.call('HINCRBY', typeSummary, 'active', -active) end
+if suspended > 0 then redis.call('HINCRBY', typeSummary, 'suspended', -suspended) end
+if total > 0 then redis.call('HINCRBY', typeSummary, 'total', -total) end
 for i = 1, count do
   redis.call('SREM', typeJobs, ARGV[2 + i])
   redis.call('DEL', KEYS[7 + i])
 end
 redis.call('DEL', serverJobs)
-if pending > 0 then redis.call('HINCRBY', typeSummary, 'pending', -pending) end
-if active > 0 then redis.call('HINCRBY', typeSummary, 'active', -active) end
-if suspended > 0 then redis.call('HINCRBY', typeSummary, 'suspended', -suspended) end
-if total > 0 then redis.call('HINCRBY', typeSummary, 'total', -total) end
 redis.call('DEL', serverSummary, heartbeat)
 redis.call('SREM', live, serverId)
 -- Keep the terminal DELETING marker: this process ID is never reused.
