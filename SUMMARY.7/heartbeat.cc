@@ -107,10 +107,10 @@ private:
  * int main()
  * {
  *   // Initialize the host configuration registry first. It must provide
- *   // redisJobStatusEnabled (plus RedisClient's Redis settings). Worker
- *   // identity is passed explicitly to registerServer().
+ *   // redisJobStatusEnabled, redisJobStatusServerType, and
+ *   // redisJobStatusServerId (plus RedisClient's Redis settings).
  *   RedisJobStatus status;
- *   status.registerServer("query", "query-01");
+ *   status.registerServer();
  *
  *   // Refresh every 10 seconds; Redis expires the key after 30 seconds
  *   // without a successful refresh.
