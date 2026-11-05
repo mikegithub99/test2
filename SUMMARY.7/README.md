@@ -6,12 +6,12 @@ Set the host registry value `redisJobStatusEnabled` to `true` or `false` (also a
 
 When enabled, `RedisJobStatus` obtains the configured `RedisClient` and runs the normal Redis operations. When disabled, it does not initialize or access `RedisClient`: result-returning mutators return `RedisJobStatus::Result::Disabled`, void mutators do nothing, and read methods return empty collections. This makes status reporting optional without requiring Redis configuration or a reachable Redis server when the feature is off.
 
-The configuration is read when the `RedisJobStatus` object is constructed; changing the registry later does not change an existing object. Tests/examples can inject a provider:
+The enablement setting is read when the `RedisJobStatus` object is constructed. Server identity is not read from the environment or host registry; pass it explicitly to `registerServer(serverType, serverId, ...)`. Tests/examples can inject a provider:
 
 ```cpp
 RedisJobStatus status([]
 {
-  return RedisJobStatus::Config{false, "query", "query-01"};
+  return RedisJobStatus::Config{false};
 });
 ```
 
@@ -24,7 +24,7 @@ Production usage:
 ```cpp
 // Initialize the application registry first, including redisJobStatusEnabled.
 // Set redisJobStatusEnabled=false to disable status reporting without Redis.
-RedisJobStatus status; // reads enablement, fixed identity, then RedisClient settings
+RedisJobStatus status; // reads enablement; identity is supplied to registerServer()
 
 auto client = RedisClient::Instance(); // optional direct access
 ```
@@ -45,9 +45,8 @@ Tests and examples can pass a provider returning deterministic mock values. The 
 Run with `--statusEnabled=false` to demonstrate the disabled path without connecting to Redis. The default is enabled.
 
 ```sh
-./RedisWorkerLifecycleExample --serverType=query-server-type1
-./RedisWorkerLifecycleExample --serverType=query-server-type1 --redisUrl=redis://127.0.0.1:6379 --cluster=false
-./RedisWorkerLifecycleExample --serverType=query-server-type1 --statusEnabled=false
+./RedisWorkerLifecycleExample --redisUrl=redis://127.0.0.1:6379 --cluster=false
+./RedisWorkerLifecycleExample --statusEnabled=false
 ```
 
 When enabled, the example injects mock values for `redisUrl` and `isRedisCluster` and calls `registerServer`, `refreshHeartbeat`, `createPendingJob`, `getServerTypes`, `getTypeSummary`, `getServerSummaries`, `getServerJobs`, all valid `transitionJob` transitions, and `completeJob`. With `--statusEnabled=false`, it skips Redis client initialization, shows the `Disabled` result, and verifies that reads are empty and void operations are no-ops. The enabled path uses a deterministic demo job ID, so rerunning against the same Redis data may report `JobAlreadyExists`; use a fresh server type or remove the prior demo record.
@@ -95,9 +94,9 @@ Requires C++17, redis-plus-plus and hiredis. The host application must provide `
 
 ## Fixed server identity and duplicate application IDs
 
-The worker identity is configured once using `RedisJobStatus::Config` or host registry values `redisJobStatusServerType` and `redisJobStatusServerId`. A worker then calls `createPendingJob(jobId, fields, serverTypeMetadata, serverMetadata)`, `transitionJob(jobId, state)`, `completeJob(jobId)`, `registerServer()`, and `refreshHeartbeat(ttlSeconds)` without repeating identity arguments.
+The worker identity is supplied explicitly when registering: `registerServer(serverType, serverId, serverTypeMetadata, serverMetadata)`. The object retains that identity for `createPendingJob(jobId, metadata)`, `transitionJob(jobId, state)`, `completeJob(jobId)`, and `refreshHeartbeat(ttlSeconds)`. The environment/host registry is used only for the `redisJobStatusEnabled` feature switch; it does not provide server type or server ID.
 
-Server-type metadata is merged into the existing type summary hash atomically with job creation: supplied fields replace matching fields and unspecified fields are preserved. Server-ID metadata is written as part of creating that server's summary; it is not merged with prior metadata. An empty `serverMetadata` map writes no custom server-ID metadata fields. Metadata fields use the `meta:<name>` prefix. Server-type metadata names `createdByServerId` and `createdAt` are reserved. When a server-type summary hash is first created, the Lua script stores the configured server ID as `meta:createdByServerId` and an ISO-8601 UTC timestamp as `meta:createdAt`. These system fields are never overwritten by later job creations.
+Server-type metadata is merged into the type summary hash during registration: supplied fields replace matching fields and unspecified fields are preserved. Server-ID metadata is merged into that server's summary during registration. Metadata fields use the `meta:<name>` prefix. Server-type metadata names `createdByServerId` and `createdAt` are reserved. When a type summary hash is first created, the script stores the registering server ID as `meta:createdByServerId` and an ISO-8601 UTC timestamp as `meta:createdAt`. These system fields are never overwritten by later registrations.
 
 Example:
 
@@ -108,7 +107,8 @@ std::map<std::string, std::string> typeMetadata = {
 std::map<std::string, std::string> serverMetadata = {
     {"host", "worker-17"}, {"zone", "west"}
 };
-status.createPendingJob("job-100", {}, typeMetadata, serverMetadata);
+status.registerServer("query", "worker-17", typeMetadata, serverMetadata);
+status.createPendingJob("job-100");
 ```
 
 In the browser, press `i` on a server-type or server-ID row to view its metadata. Press Enter to dismiss the popup.
