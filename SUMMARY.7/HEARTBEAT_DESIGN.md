@@ -49,7 +49,7 @@ Before cleanup, the worker invokes a fencing Lua script in the same `{serverType
 
 ## Cleanup protocol
 
-The manager periodically discovers types from `servers:{registry}:types`, then candidate IDs from `servers:live:{<serverType>}`. Candidate discovery is advisory; the fencing script decides whether the heartbeat is truly expired.
+The manager periodically discovers types from `servers:{registry}:types` and IDs from each type's registry set. The fencing script checks the heartbeat and requires live-set membership before fencing an `ACTIVE` ID, so a newly registered process is not cleaned before its first heartbeat. A `DELETING` ID is revisited even after Phase A removes its live-set membership, allowing Phase B to be retried after a crash.
 
 ### Phase A — per-type cleanup
 
