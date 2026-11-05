@@ -95,6 +95,19 @@ string heartbeatKey(
 using KeyList = vector<string>;
 using ArgList = vector<string>;
 
+KeyList lifecycleKeys(
+    const string& jobId,
+    const string& serverType,
+    const string& serverId)
+{
+  return {
+      jobKey(serverType, serverId, jobId),
+      typeJobsKey(serverType),
+      serverJobsKey(serverType, serverId),
+      typeSummaryKey(serverType),
+      serverSummaryKey(serverType, serverId)};
+}
+
 // Job hash fields owned by RedisJobStatus rather than caller metadata.
 constexpr const char* kJobIdField = "jobId";
 constexpr const char* kStatusField = "status";
@@ -264,6 +277,13 @@ RedisJobStatus::RedisJobStatus(ConfigProvider provider)
   }
 }
 
+void RedisJobStatus::validateLifecycleIdentity(const string& jobId) const
+{
+  validateIdentifier(m_serverType, "serverType", true);
+  validateIdentifier(m_serverId, "serverId");
+  validateIdentifier(jobId, "jobId");
+}
+
 RedisJobStatus::Result RedisJobStatus::createPendingJob(
     const string& jobId,
     const map<string, string>& metadata)
@@ -272,9 +292,7 @@ RedisJobStatus::Result RedisJobStatus::createPendingJob(
   {
     return Result::Disabled;
   }
-  validateIdentifier(m_serverType, "serverType", true);
-  validateIdentifier(m_serverId, "serverId");
-  validateIdentifier(jobId, "jobId");
+  validateLifecycleIdentity(jobId);
   for (const auto& item : metadata)
   {
     if (item.first.empty())
@@ -282,10 +300,7 @@ RedisJobStatus::Result RedisJobStatus::createPendingJob(
   }
 
   const string reference = jobReference(m_serverId, jobId);
-  KeyList keys = {
-      jobKey(m_serverType, m_serverId, jobId), typeJobsKey(m_serverType),
-      serverJobsKey(m_serverType, m_serverId), typeSummaryKey(m_serverType),
-      serverSummaryKey(m_serverType, m_serverId)};
+  const KeyList keys = lifecycleKeys(jobId, m_serverType, m_serverId);
   ArgList args = {jobId, m_serverType, m_serverId, reference};
   appendMetadataArgs(args, metadata, [](const string& field)
   {
@@ -303,16 +318,11 @@ RedisJobStatus::Result RedisJobStatus::transitionJob(
     State newState)
 {
   if (!m_enabled) return Result::Disabled;
-  validateIdentifier(m_serverType, "serverType", true);
-  validateIdentifier(m_serverId, "serverId");
-  validateIdentifier(jobId, "jobId");
+  validateLifecycleIdentity(jobId);
   if (newState == State::Pending) return Result::InvalidTransition;
   const string reference = jobReference(m_serverId, jobId);
   const string newStateName = stateName(newState);
-  KeyList keys = {
-      jobKey(m_serverType, m_serverId, jobId), typeJobsKey(m_serverType),
-      serverJobsKey(m_serverType, m_serverId), typeSummaryKey(m_serverType),
-      serverSummaryKey(m_serverType, m_serverId)};
+  const KeyList keys = lifecycleKeys(jobId, m_serverType, m_serverId);
   ArgList args = {jobId, m_serverType, m_serverId, newStateName, reference};
   const auto result = m_client->execute([&](auto& redis)
   {
@@ -324,14 +334,9 @@ RedisJobStatus::Result RedisJobStatus::transitionJob(
 RedisJobStatus::Result RedisJobStatus::completeJob(const string& jobId)
 {
   if (!m_enabled) return Result::Disabled;
-  validateIdentifier(m_serverType, "serverType", true);
-  validateIdentifier(m_serverId, "serverId");
-  validateIdentifier(jobId, "jobId");
+  validateLifecycleIdentity(jobId);
   const string reference = jobReference(m_serverId, jobId);
-  KeyList keys = {
-      jobKey(m_serverType, m_serverId, jobId), typeJobsKey(m_serverType),
-      serverJobsKey(m_serverType, m_serverId), typeSummaryKey(m_serverType),
-      serverSummaryKey(m_serverType, m_serverId)};
+  const KeyList keys = lifecycleKeys(jobId, m_serverType, m_serverId);
   ArgList args = {jobId, m_serverType, m_serverId, reference};
   const auto result = m_client->execute([&](auto& redis)
   {
