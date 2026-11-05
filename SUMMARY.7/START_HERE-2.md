@@ -36,23 +36,15 @@ The project README describes the feature as requiring C++17, redis-plus-plus and
 
 ## Current public API and behavior
 
-`RedisJobStatus::Config` contains:
-- `enabled` (defaults to true)
-- `serverType`
-- `serverId`
-
-The `RedisJobStatus` constructor accepts an optional `ConfigProvider`. Without one, it reads the host registry values:
-- `redisJobStatusEnabled`
-- `redisJobStatusServerType`
-- `redisJobStatusServerId`
+`RedisJobStatus::Config` contains only `enabled` (defaults to true). The constructor's optional `ConfigProvider` reads only `redisJobStatusEnabled` by default. Server type and server ID are passed explicitly to `registerServer(serverType, serverId, ...)`; neither is read from the environment or host registry.
 
 Enablement accepts true/false, 1/0, and yes/no (case-insensitive); empty/unset defaults to enabled. Configuration is captured when the object is constructed. When disabled, Redis is not initialized/accessed: result-returning mutators return `Result::Disabled`, void mutators do nothing, and read APIs return empty collections.
 
 The main API includes:
-- `createPendingJob(jobId, fields, serverTypeMetadata, serverMetadata)`
+- `createPendingJob(jobId, metadata)`
 - `transitionJob(jobId, State)`
 - `completeJob(jobId)`
-- `registerServer()`
+- `registerServer(serverType, serverId, serverTypeMetadata, serverMetadata)`
 - `refreshHeartbeat(ttlSeconds)`
 - `getServerTypes()`
 - `getTypeSummary(serverType)`
@@ -68,7 +60,7 @@ Valid lifecycle transitions are PENDING → ACTIVE, ACTIVE → SUSPENDED, and SU
 - JobAlreadyExists=5
 - Disabled=6
 
-Worker identity is fixed per `RedisJobStatus` object. Job storage uses a length-prefixed composite reference derived from server ID and original job ID, while the hash's `jobId` field preserves the original application job ID for display.
+Worker identity is set explicitly by `registerServer(serverType, serverId, ...)` and retained by the `RedisJobStatus` object. Job storage uses a length-prefixed composite reference derived from server ID and original job ID, while the hash's `jobId` field preserves the original application job ID for display.
 
 ## Redis key layout and Cluster constraints
 
@@ -85,11 +77,11 @@ All lifecycle keys for a server type share the `{serverType}` hash tag, allowing
 
 ## Metadata feature — current intended semantics
 
-The metadata parameters were added to `createPendingJob()`:
+Server metadata is supplied to `registerServer()`; job metadata is supplied to `createPendingJob()`:
 
 1. **Job fields** are stored on the job hash as before.
-2. **Server-type metadata** is stored in `summary:type:{serverType}` using hash fields prefixed with `meta:`. It is merged: supplied values replace matching metadata fields, while unspecified metadata fields remain.
-3. **Server-ID metadata** is written as part of creating that server summary. It is not a general merge/replace operation against pre-existing server metadata. An empty map adds no custom metadata fields.
+2. **Server-type metadata** is stored in `summary:type:{serverType}` during registration using hash fields prefixed with `meta:`. It is merged: supplied values replace matching metadata fields, while unspecified metadata fields remain.
+3. **Server-ID metadata** is merged into that server summary during registration. An empty map adds no custom metadata fields.
 4. When a type summary is first created, the Lua script automatically writes:
    - `meta:createdByServerId` — the server ID that caused initial creation.
    - `meta:createdAt` — UTC ISO-8601 timestamp.
