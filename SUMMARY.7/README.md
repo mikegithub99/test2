@@ -154,7 +154,7 @@ The type-summary metadata initialization script receives the creation timestamp,
 - `RedisClient.h/.cc` — shared Redis client dependency currently located in the repository's separate `.7/` directory; it is included/linked by this implementation, not mirrored into `SUMMARY.7/`.
 - `RedisJobStatus.h/.cc` — public API and C++ implementation.
 - `RedisJobScripts.inc` — the shared collection of embedded Lua scripts used by job lifecycle, heartbeat refresh, fencing, and cleanup. Keep all Lua in this file; the manager includes it rather than maintaining separate script bodies.
-- `RedisHeartbeatManager.h/.cc` — process-wide background worker that fences expired IDs, validates and removes their per-type artifacts, then removes registry membership in a separate Redis Cluster slot.
+- `RedisHeartbeatManager.h/.cc` — central cleanup-only worker that fences expired IDs across all server types and removes their artifacts; it does not publish a server heartbeat.
 - `heartbeat.cc` — example heartbeat runner that refreshes immediately and then periodically on a worker thread.
 - `examples/` — example programs, where included.
 - `redis_job_correctness.py` — Redis data correctness checker, where included.
@@ -162,7 +162,7 @@ The type-summary metadata initialization script receives the creation timestamp,
 
 ## Build and validation
 
-The implementation requires C++17, redis-plus-plus, hiredis, and a host-provided `get_reg_val(const std::string&)` implementation. After `registerServer()` completes, it starts one process-wide `RedisHeartbeatManager` for the configured `(serverType, serverId)`. The manager refreshes its own heartbeat every 10 seconds with a 30-second TTL and scans for expired registrations every 5 seconds. A server is eligible for fencing only after its first successful heartbeat has published it to the live set. Initialize the host configuration registry before constructing `RedisJobStatus` or making the first `RedisClient::Instance()` call. Exact compiler and linker flags depend on the host application's Redis client installation.
+The implementation requires C++17, redis-plus-plus, hiredis, and a host-provided `get_reg_val(const std::string&)` implementation. After `registerServer()` completes, it starts one deployment-wide `RedisHeartbeatManager` for the configured `(serverType, serverId)`. Each server process refreshes its own heartbeat every 10 seconds with a 30-second TTL. The central manager scans for expired registrations every 5 seconds. A server is eligible for fencing only after its first successful heartbeat has published it to the live set. Initialize the host configuration registry before constructing `RedisJobStatus` or making the first `RedisClient::Instance()` call. Exact compiler and linker flags depend on the host application's Redis client installation.
 
 No build, unit test, Redis integration test, or Redis Cluster test has yet been run for the heartbeat-manager integration. Validate against the project's actual build and test setup, including standalone Redis and Redis Cluster, before deploying.
 
@@ -173,7 +173,7 @@ No build, unit test, Redis integration test, or Redis Cluster test has yet been 
 described in `HEARTBEAT_DESIGN.md`. It is started automatically, once per
 process, after `registerServer()` has completed successfully. The host
 configuration registry and Redis client settings must be initialized first.
-The manager refreshes the current process heartbeat and scans registered IDs; its per-type fence only considers an
+Each server process refreshes its own heartbeat through `RedisJobStatus`; the central manager scans registered IDs; its per-type fence only considers an
 `ACTIVE` ID after its first heartbeat has published live-set membership. It
 fences expired IDs in their per-type Redis Cluster slot, removes their jobs and
 per-server summary in Phase A, then removes the ID from the registry in Phase B. The terminal `DELETING` state is
@@ -181,7 +181,7 @@ retained to prevent accidental reactivation of a process ID and to make a
 crash between phases recoverable. Since server IDs are guaranteed unique and
 never reused, a replacement process registers under a different ID.
 
-Compile `RedisHeartbeatManager.cc` alongside `RedisJobStatus.cc` and
+Build `RedisHeartbeatManager.cc` as a separate central cleanup service (with `RedisHeartbeatManagerMain.cc`). Build `RedisJobStatus.cc` into each server process. Both include the shared `RedisJobScripts.inc`. Compile `RedisJobStatus.cc` and
 `.7/RedisClient.cc` (with `.7/` on the include path), with the same C++17, redis-plus-plus, hiredis, and host
 configuration dependencies. No build or Redis integration test has been run
 for this implementation yet.
