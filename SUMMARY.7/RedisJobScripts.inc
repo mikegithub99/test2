@@ -305,6 +305,10 @@ end
 return 1
 )lua";
 
+// Compatibility names for the shorter server-summary metadata script name.
+const char* const kSetServerSummaryMetaScript = kSetServerSummaryMetadataScript;
+const char* const KSetServerSummaryMetaScript = kSetServerSummaryMetadataScript;
+
 const char* const kRegisterServerScript = R"lua(
 local serverTypesKey = KEYS[1]
 local typeServersKey = KEYS[2]
