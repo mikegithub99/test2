@@ -3,6 +3,7 @@
  * @brief Implementation of logical Redis job-status APIs.
  */
 
+#include <cstddef>
 #include <cstdint>
 #include <map>
 #include <string>
@@ -133,7 +134,7 @@ void appendMetadataArgs(
   const auto countIndex = args.size();
   args.push_back("0");
 
-  size_t count = 0;
+  std::size_t count = 0;
   for (const auto& item : metadata)
   {
     if (!includeField(item.first))
