@@ -10,7 +10,7 @@ The cleanup target is one server ID only. The server-type keys are shared aggreg
 
 - Delete only this server ID's job hashes, server job index, server summary, heartbeat, live-set membership, and matching registration entry.
 - In the shared type job index, remove only the references for jobs owned by this server ID. Do not delete the type job index itself.
-- In the shared type summary, decrement only the counters contributed by this server's deleted jobs. Do not delete the type summary, reset its counters, or remove its metadata.
+- In the shared type summary, remove only this server ID's membership field and decrement only the counters contributed by this server's deleted jobs. Do not delete the type summary, reset its counters, or remove its metadata.
 - Do not remove the server type from global type discovery, and do not touch any other server ID's jobs, indexes, summary, heartbeat, live membership, or registration.
 
 Cleanup must:
@@ -19,9 +19,10 @@ Cleanup must:
 - Remove each job reference from the server-level and server-type job indexes.
 - Delete the server summary hash, including its counters and metadata.
 - Delete the heartbeat key and remove the server from the live-server index.
+- Remove the server ID from the server-type summary's membership fields.
 - Remove the server ID from the registered-server directory once cleanup is safely committed.
 - Decrement the server-type summary counters for every deleted job: the matching state counter (`pending`, `active`, or `suspended`) and `total`.
-- Preserve the server-type summary hash and its metadata. Its counters must represent the remaining jobs owned by all surviving servers of that type. Do not delete the type or its descriptive metadata merely because one instance failed.
+- Preserve the server-type summary hash and its metadata. Its membership fields and counters must represent the remaining servers and jobs of that type. Do not delete the type or its descriptive metadata merely because one instance failed.
 
 This is destructive cleanup. A server that resumes after its heartbeat expires is treated as a new registration/incarnation; its old jobs and server summary are not restored.
 
@@ -42,6 +43,8 @@ The current implementation uses these relevant keys:
 
 The job, index, summary, and heartbeat keys use the `{serverType}` hash tag. The registration directory uses `{registry}`. These are different Redis Cluster slots.
 
+The type summary is a shared HASH. Its counters and metadata remain type-wide; server membership is represented separately within that same hash using fields named `server:<serverId>`. Each such field stores the current incarnation token for that server ID. This is a new design convention; the current implementation does not yet maintain these membership fields.
+
 ## Redis Cluster constraint
 
 A single Lua script cannot atomically access both the type-partitioned lifecycle keys and the global `{registry}` keys in Redis Cluster. A cleanup script that tries to delete jobs and also `SREM` the current registered-server set will fail with a cross-slot error.
@@ -60,7 +63,7 @@ It shares the `{serverType}` hash tag with the heartbeat, jobs, and summaries. A
 2. Set the heartbeat value with the requested positive TTL.
 3. Add the server ID to `servers:live:{<serverType>}`.
 
-Use a Lua script for those operations so the heartbeat and live-set membership cannot diverge because of an interrupted client sequence. Registration should also establish the server's current incarnation as described below.
+Use a Lua script for those operations so the heartbeat and live-set membership cannot diverge because of an interrupted client sequence. Registration should also establish the server's current incarnation in the type summary's `server:<serverId>` field, storing the incarnation token. That summary update must be performed by a script operating only on `{serverType}` keys; it cannot be combined in the same Lua script as updates to the `{registry}` directory.
 
 The existing `servers:{registry}:type:<serverType>` set remains the discovery directory during migration, but cleanup must remove its member in the separate registry phase.
 
@@ -79,7 +82,7 @@ The script receives only keys with the `{serverType}` hash tag, including:
 - The candidate's server summary.
 - The type summary.
 
-The script must first check that the heartbeat is still absent/expired and that the candidate's incarnation still matches the expected token. If a heartbeat exists or the incarnation differs, it must make no changes and report that the candidate is live or has been replaced.
+The script must first check that the heartbeat is still absent/expired and that the candidate's incarnation still matches the expected token. The incarnation is checked against the `server:<serverId>` field in the type summary (and the heartbeat token, if stored separately). If a heartbeat exists or the incarnation differs, it must make no changes and report that the candidate is live or has been replaced.
 
 If the heartbeat is absent and the incarnation matches, the script must preflight all data before writing:
 
@@ -89,19 +92,21 @@ If the heartbeat is absent and the incarnation matches, the script must prefligh
 4. Validate each job status is one of `PENDING`, `ACTIVE`, or `SUSPENDED`.
 5. Count jobs by status. These counts, rather than the server summary, are authoritative for the type-counter decrements.
 6. Verify the type summary has valid integer counters with sufficient values for each decrement. Validate the relevant type job index membership for every reference.
+7. Verify the type summary's `server:<serverId>` membership field contains the expected incarnation token.
 
 Only after all checks pass, perform the cleanup atomically:
 
 - For each job owned by this server ID, remove only that job's reference from the shared `jobs:type:{<serverType>}` set and delete only that job hash. Leave references belonging to other server IDs untouched.
 - Delete `jobs:server:{<serverType>}:<serverId>`.
 - Decrement `pending`, `active`, and `suspended` in the shared `summary:type:{<serverType>}` by the counts for this server's deleted jobs. Decrement `total` by only this server's deleted-job count. A zero decrement may be skipped. Preserve all remaining counts and metadata.
+- Remove only the `server:<serverId>` field from `summary:type:{<serverType>}` (using `HDEL`). Do not delete or reset the type summary hash, any other `server:<otherServerId>` field, or any type metadata/counter field.
 - Delete `summary:server:{<serverType>}:<serverId>`.
 - Delete the heartbeat key.
 - Remove the server ID from `servers:live:{<serverType>}`.
 
 The script must not decrement counters based on the server summary: that hash is being deleted and could be stale or inconsistent. It must not change type-summary metadata or delete the type summary. On inconsistent data, return an error/result without partial cleanup; validate everything that can fail before the first write because Redis Lua scripts do not provide general rollback after runtime errors.
 
-An empty server job index means there are no jobs to delete; the type counters are unchanged, and the server summary can still be deleted.
+An empty server job index means there are no jobs to delete; the type counters are unchanged, and the server summary and the matching type-summary membership field can still be deleted.
 
 ### Phase B — global registry cleanup (registry hash slot)
 
@@ -115,7 +120,7 @@ To support this compare-and-remove operation, replace or supplement the per-type
 
 A server ID alone is not sufficient to distinguish a failed process from a restarted process reusing the same ID. Each process lifetime must have a unique incarnation token (for example, a UUID generated at startup).
 
-- Registration publishes `serverId -> incarnationToken` in the registry.
+- Registration publishes `serverId -> incarnationToken` in the registry and stores the token in the type summary's `server:<serverId>` membership field.
 - Heartbeat refresh publishes the same token alongside the heartbeat and live-set membership.
 - Cleanup is conditional on the expected token.
 - A new process using the same server ID publishes a different token.
@@ -140,6 +145,7 @@ A future implementation should add:
 - A heartbeat refresh Lua script that sets the TTL-bearing heartbeat and adds the ID to the per-type live set atomically.
 - A cleanup API/worker operation that accepts `serverType`, `serverId`, and the expected incarnation token, and reports cleaned, still-live/replaced, already-cleaned, or inconsistent outcomes.
 - A registry representation and Lua operations that register an incarnation and conditionally remove only the matching incarnation.
+- A type-summary membership convention: `server:<serverId>` fields map each registered server ID to its incarnation token. Registration adds/updates only that server's field; cleanup removes only that server's field with `HDEL`. The type summary's counters and metadata remain independent fields in the same hash.
 - A cleanup Lua script embedded in `RedisJobScripts.inc`, with all Phase A keys passed explicitly through `KEYS`.
 - Tests covering multiple jobs in each state, zero-job servers, wrong-type keys, missing jobs, counter underflow, retry/idempotency, heartbeat renewal during cleanup, and server restart with the same server ID.
 - Redis Cluster tests proving each Lua script touches only one hash slot.
