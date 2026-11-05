@@ -72,15 +72,15 @@ Only after all checks pass, atomically:
 - Decrement type-summary `pending`, `active`, `suspended`, and `total` by counts derived from this server's jobs. Preserve type metadata and all remaining counters.
 - Delete `summary:server:{<serverType>}:<serverId>`.
 - Delete this server's heartbeat and remove only its ID from `servers:live:{<serverType>}`.
-- Remove this ID's field from `servers:state:{<serverType>}` after cleanup commits within the script.
+- Retain this ID's `DELETING` field in `servers:state:{<serverType>}` as a terminal marker. Do not reactivate or reuse the ID.
 
 Do not delete the type-wide job index, type summary, global type-discovery set, or any other server's keys/references. With zero jobs, counters are unchanged but per-server artifacts and state can still be removed.
 
-Redis Lua scripts serialize commands but do not roll back earlier writes after a runtime error. Preflight all possible failure conditions before writing. On inconsistent data, return an error without partial cleanup. Phase A must be idempotent: once the server job index and artifacts are removed, a retry must not decrement counters again.
+Redis Lua scripts serialize commands but do not roll back earlier writes after a runtime error. Preflight all possible failure conditions before writing. On inconsistent data, return an error without partial cleanup. Phase A must be idempotent: once the server job index and artifacts are removed, a retry must not decrement counters again. Retain the terminal `DELETING` state field so the same process ID cannot be reactivated. If a worker crashes after Phase A but before Phase B, a later pass recognizes `DELETING` with the server job index and server summary absent and safely retries Phase B.
 
 ### Phase B — registry cleanup
 
-Only after Phase A is confirmed committed, remove this exact `serverId` from `servers:{registry}:type:<serverType>` in a separate registry-slot operation. Keep `servers:{registry}:types` and every other ID. The operation is idempotent and safe to retry after a worker crash.
+Only after Phase A is confirmed committed, remove this exact `serverId` from `servers:{registry}:type:<serverType>` in a separate registry-slot operation. Retain the terminal `DELETING` state field in the per-type state hash as a no-reuse tombstone. Keep `servers:{registry}:types` and every other ID. The operation is idempotent and safe to retry after a worker crash.
 
 Because IDs are guaranteed unique and never reused, a delayed Phase B removal cannot unregister a replacement process: a replacement must register with a different ID. Do not introduce a registry token/hash solely for incarnation comparison.
 
