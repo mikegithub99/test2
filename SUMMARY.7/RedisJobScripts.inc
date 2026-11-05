@@ -288,8 +288,8 @@ return RESULT_OK
 /**
  * @brief Initializes server-type metadata without overwriting existing values.
  *
- * KEYS[1] is the type summary hash. ARGV[1..3] are registering server ID,
- * UTC creation timestamp, and metadata pair count. Remaining args are pairs.
+ * KEYS[1] is the type summary hash. ARGV[1] is the UTC creation timestamp,
+ * ARGV[2] is metadata pair count, and remaining args are field/value pairs.
  */
 const char* const kInitializeTypeSummaryMetadataScript = R"lua(
 local summaryKey = KEYS[1]
