@@ -43,6 +43,7 @@ local typeJobsKey = KEYS[2]
 local serverJobsKey = KEYS[3]
 local typeSummaryKey = KEYS[4]
 local serverSummaryKey = KEYS[5]
+local serverStateKey = KEYS[6]
 
 local function keytype(key)
   return redis.call('TYPE', key).ok
@@ -63,8 +64,12 @@ end
 if not validtype(typeJobsKey, 'set') or
    not validtype(serverJobsKey, 'set') or
    not validtype(typeSummaryKey, 'hash') or
-   not validtype(serverSummaryKey, 'hash') then
+   not validtype(serverSummaryKey, 'hash') or
+   keytype(serverStateKey) ~= 'hash' then
   return RESULT_DATA_INCONSISTENT
+end
+if redis.call('HGET', serverStateKey, ARGV[3]) ~= 'ACTIVE' then
+  return 7 -- RESULT_SERVER_NOT_ACTIVE
 end
 
 local jobId = ARGV[1]
@@ -114,6 +119,7 @@ local typeJobsKey = KEYS[2]
 local serverJobsKey = KEYS[3]
 local typeSummaryKey = KEYS[4]
 local serverSummaryKey = KEYS[5]
+local serverStateKey = KEYS[6]
 
 local function keytype(key)
   return redis.call('TYPE', key).ok
@@ -123,6 +129,12 @@ local function validtype(key, expected)
   return t == 'none' or t == expected
 end
 
+if keytype(serverStateKey) ~= 'hash' then
+  return RESULT_DATA_INCONSISTENT
+end
+if redis.call('HGET', serverStateKey, ARGV[3]) ~= 'ACTIVE' then
+  return 7 -- RESULT_SERVER_NOT_ACTIVE
+end
 if redis.call('EXISTS', jobKey) == 0 then
   return RESULT_NOT_FOUND
 end
@@ -199,6 +211,7 @@ local typeJobsKey = KEYS[2]
 local serverJobsKey = KEYS[3]
 local typeSummaryKey = KEYS[4]
 local serverSummaryKey = KEYS[5]
+local serverStateKey = KEYS[6]
 
 local function keytype(key)
   return redis.call('TYPE', key).ok
@@ -208,6 +221,12 @@ local function validtype(key, expected)
   return t == 'none' or t == expected
 end
 
+if keytype(serverStateKey) ~= 'hash' then
+  return RESULT_DATA_INCONSISTENT
+end
+if redis.call('HGET', serverStateKey, ARGV[3]) ~= 'ACTIVE' then
+  return 7 -- RESULT_SERVER_NOT_ACTIVE
+end
 if redis.call('EXISTS', jobKey) == 0 then
   return RESULT_NOT_FOUND
 end
@@ -333,4 +352,38 @@ local serverType = ARGV[1]
 local serverId = ARGV[2]
 redis.call('SADD', serverTypesKey, serverType)
 return redis.call('SADD', typeServersKey, serverId)
+)lua";
+
+
+// Per-type lifecycle state initialization. This script is deliberately separate
+// from registry registration because the two key groups occupy different slots.
+const char* const kActivateServerScript = R"lua(
+local stateKey = KEYS[1]
+local keyType = redis.call('TYPE', stateKey).ok
+if keyType ~= 'none' and keyType ~= 'hash' then
+  return redis.error_reply('wrong state key type')
+end
+local current = redis.call('HGET', stateKey, ARGV[1])
+if current == 'ACTIVE' then return 1 end
+if current ~= false then return 0 end
+redis.call('HSET', stateKey, ARGV[1], 'ACTIVE')
+return 1
+)lua";
+
+// Heartbeat refresh and live-set publication are one atomic per-type action.
+const char* const kRefreshHeartbeatScript = R"lua(
+local heartbeatKey = KEYS[1]
+local liveKey = KEYS[2]
+local stateKey = KEYS[3]
+local heartbeatType = redis.call('TYPE', heartbeatKey).ok
+local liveType = redis.call('TYPE', liveKey).ok
+local stateType = redis.call('TYPE', stateKey).ok
+if (heartbeatType ~= 'none' and heartbeatType ~= 'string') or
+   (liveType ~= 'none' and liveType ~= 'set') or stateType ~= 'hash' then
+  return redis.error_reply('wrong heartbeat key type')
+end
+if redis.call('HGET', stateKey, ARGV[1]) ~= 'ACTIVE' then return 0 end
+redis.call('SET', heartbeatKey, ARGV[1], 'EX', ARGV[2])
+redis.call('SADD', liveKey, ARGV[1])
+return 1
 )lua";
