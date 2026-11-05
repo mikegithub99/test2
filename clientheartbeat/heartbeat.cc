@@ -51,7 +51,7 @@ int main()
     }
     catch (...)
     {
-      std::cerr << "heartbeat: refresh failed: unknown exception\\n";
+      std::cerr << "heartbeat: refresh failed: unknown exception\n";
     }
 
     // No stop condition or notification is used: the worker process owns
