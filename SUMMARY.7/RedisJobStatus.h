@@ -14,10 +14,6 @@
 #include <memory>
 #include <string>
 #include <vector>
-#include <chrono>
-#include <condition_variable>
-#include <mutex>
-#include <thread>
 
 #include "RedisClient.h"
 
@@ -87,7 +83,6 @@ public:
    *        redisJobStatusServerType, and redisJobStatusServerId through get_reg_val().
    */
   explicit RedisJobStatus(ConfigProvider provider = {});
-  ~RedisJobStatus();
   RedisJobStatus(const RedisJobStatus&) = delete;
   RedisJobStatus& operator=(const RedisJobStatus&) = delete;
 
@@ -155,18 +150,10 @@ private:
       const char* name,
       bool isServerType = false);
   void validateLifecycleIdentity(const std::string& jobId) const;
-  void heartbeatLoop();
-  void startHeartbeatPublisher();
-
   bool m_enabled = true;
   std::string m_serverType;
   std::string m_serverId;
   std::shared_ptr<RedisClient> m_client;
-  std::mutex m_heartbeatMutex;
-  std::condition_variable m_heartbeatWakeup;
-  bool m_stopHeartbeat = false;
-  bool m_registered = false;
-  std::thread m_heartbeatThread;
 };
 
 #endif // REDIS_JOB_STATUS_H
