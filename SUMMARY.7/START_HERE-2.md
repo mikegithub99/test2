@@ -27,6 +27,7 @@ Important files in `SUMMARY.7/` include:
 - `RedisClient.h/.cc` — Redis client selection/configuration and singleton access.
 - `RedisJobStatus.h/.cc` — public job lifecycle and dashboard APIs and their C++ implementation.
 - `RedisJobScripts.inc` — embedded Lua scripts, included by `RedisJobStatus.cc` as C++ raw string literals. Edit the embedded script here; it is not a standalone Lua file.
+- `HeartbeatManager.h/.cc` — process-wide background cleanup manager. It is started once when the first enabled `RedisJobStatus` instance is constructed.
 - `redis_browser.py` — interactive Redis browser, including metadata information popup.
 - `redis_job_correctness.py` — correctness/consistency checks for Redis job data.
 - `README.md` — design, usage, key layout, and build/validation notes.
@@ -59,6 +60,7 @@ Valid lifecycle transitions are PENDING → ACTIVE, ACTIVE → SUSPENDED, and SU
 - InconsistentData=4
 - JobAlreadyExists=5
 - Disabled=6
+- ServerNotActive=7
 
 Worker identity is loaded from host configuration when the `RedisJobStatus` object is constructed and retained by that object. Any instance used for lifecycle calls must be constructed with the same configured identity; `registerServer()` only registers the configured identity and metadata. Job storage uses a length-prefixed composite reference derived from server ID and original job ID, while the hash's `jobId` field preserves the original application job ID for display.
 
@@ -83,8 +85,7 @@ Server metadata is supplied to `registerServer()`; job metadata is supplied to `
 2. **Server-type metadata** is stored in `summary:type:{serverType}` during registration using hash fields prefixed with `meta:`. It is merged: supplied values replace matching metadata fields, while unspecified metadata fields remain.
 3. **Server-ID metadata** is merged into that server summary during registration. An empty map adds no custom metadata fields.
 4. When a type summary is first created, the Lua script automatically writes:
-   - `meta:createdByServerId` — the server ID that caused initial creation.
-   - `meta:createdAt` — UTC ISO-8601 timestamp.
+   - `meta:createdAt` — UTC ISO-8601 timestamp. The process `serverId` is not duplicated in type metadata.
    These are reserved system fields; caller-supplied type metadata must not overwrite them.
 5. Metadata values are stored in Redis hashes as strings.
 
