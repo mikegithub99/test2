@@ -129,7 +129,7 @@ constexpr const char* kServerIdField = "serverId";
 constexpr const char* kReservedJobMetadataFields[] = {
     kJobIdField, kStatusField, kServerTypeField, kServerIdField};
 
-// Type-summary metadata initialized once by the first registering server.
+// Type-summary metadata initialized once; server identity is not duplicated.
 constexpr const char* kCreatedAtMetadataField = "createdAt";
 
 bool isReservedJobMetadataField(const string& field)
