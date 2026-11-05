@@ -12,16 +12,18 @@
 
 #include <algorithm>
 #include <chrono>
+#include <condition_variable>
 #include <cctype>
 #include <ctime>
 #include <iomanip>
+#include <iostream>
 #include <iterator>
 #include <sstream>
 #include <stdexcept>
+#include <thread>
 #include <utility>
 
 #include "RedisJobStatus.h"
-#include "RedisHeartbeatManager.h"
 
 using std::back_inserter;
 using std::chrono::seconds;
@@ -288,6 +290,54 @@ RedisJobStatus::RedisJobStatus(ConfigProvider provider)
   }
 }
 
+// Stop the per-process publisher cleanly when this API owner is destroyed.
+RedisJobStatus::~RedisJobStatus()
+{
+  {
+    std::lock_guard<std::mutex> lock(m_heartbeatMutex);
+    m_stopHeartbeat = true;
+  }
+  m_heartbeatWakeup.notify_all();
+  if (m_heartbeatThread.joinable())
+    m_heartbeatThread.join();
+}
+
+void RedisJobStatus::startHeartbeatPublisher()
+{
+  std::lock_guard<std::mutex> lock(m_heartbeatMutex);
+  if (m_registered)
+    return;
+  m_registered = true;
+  m_stopHeartbeat = false;
+  m_heartbeatThread = std::thread(&RedisJobStatus::heartbeatLoop, this);
+}
+
+void RedisJobStatus::heartbeatLoop()
+{
+  std::unique_lock<std::mutex> lock(m_heartbeatMutex);
+  while (!m_stopHeartbeat)
+  {
+    lock.unlock();
+    try
+    {
+      refreshHeartbeat(30);
+    }
+    catch (const std::exception& error)
+    {
+      std::cerr << "RedisJobStatus: heartbeat refresh failed: "
+                << error.what() << '\\n';
+    }
+    catch (...)
+    {
+      std::cerr << "RedisJobStatus: heartbeat refresh failed: unknown exception\\n";
+    }
+    lock.lock();
+    m_heartbeatWakeup.wait_for(
+        lock, std::chrono::seconds(10), [this] { return m_stopHeartbeat; });
+  }
+}
+
+
 void RedisJobStatus::validateLifecycleIdentity(const string& jobId) const
 {
   validateIdentifier(m_serverType, "serverType", true);
@@ -430,9 +480,9 @@ void RedisJobStatus::registerServer(
             redis, kSetServerSummaryMetadataScript, serverKeys, serverArgs);
       });
 
-  // Registration and ACTIVE state are fully established before the manager
-  // starts its immediate heartbeat refresh. Start() is process-singleton.
-  RedisHeartbeatManager::Start(m_serverType, m_serverId);
+  // Each server process publishes only its own heartbeat. Cleanup is
+  // handled by the separately deployed central RedisHeartbeatManager.
+  startHeartbeatPublisher();
 }
 
 vector<string> RedisJobStatus::getServerTypes()
