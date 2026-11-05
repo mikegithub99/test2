@@ -1,0 +1,39 @@
+# Heartbeat cleanup changes
+
+This folder documents the proposed heartbeat-expiry cleanup design for Redis job status.
+
+## Agreed API and identity
+
+- Keep the existing `RedisJobStatus::registerServer(serverTypeMetadata, serverMetadata)` signature unchanged.
+- `serverType` and `serverId` come from `ConfigProvider` (or the existing default configuration lookup).
+- The application guarantees that `serverId` is unique per process by appending a UUID, and IDs are not reused.
+- Do not add a separate incarnation token or copy `serverId` into metadata/type-summary metadata.
+- Keep the existing lifecycle API signatures unchanged.
+
+## Proposed components
+
+- `RedisJobStatus` retains its existing configured identity and Redis client. It does not generate a second UUID or own a cleanup thread.
+- A separate `HeartbeatManager` owns a background thread and its Redis access.
+- Heartbeat refresh writes the configured `serverId` as the heartbeat value with a TTL and updates the per-type live-server set atomically.
+- The manager discovers candidates, fences expired IDs, performs per-type cleanup, then removes the registration in a separate registry-slot operation.
+
+## Cleanup safety
+
+Cleanup is limited to one exact `(serverType, serverId)`. It removes only that server's job hashes, server job index, server summary, heartbeat, live-set membership, and registration entry. It removes only that server's job references from the shared type index and decrements shared type counters based on the statuses read from that server's job hashes. It preserves the type summary, type metadata, global type discovery, and all other servers' data.
+
+A per-type state hash records `ACTIVE` or `DELETING`. Heartbeat refresh and all job lifecycle Lua scripts require `ACTIVE`. A fencing Lua script atomically changes `ACTIVE` to `DELETING` only when the heartbeat is absent. This prevents later lifecycle calls or heartbeat refreshes from racing with cleanup.
+
+Redis Cluster requires two phases because per-type keys use the `{serverType}` hash tag while registration keys use `{registry}`:
+
+1. Phase A fences and cleans this server using only per-type keys.
+2. Phase B removes this unique server ID from the registry using only registry-slot keys, after Phase A is confirmed committed.
+
+Lua scripts must preflight key types, job ownership/status, type-index membership, and counter validity before writing. Lua execution is atomic against interleaving but does not roll back earlier writes after a runtime error. Both phases must be idempotent and safe to retry.
+
+## Files
+
+- [`../HEARTBEAT_DESIGN.md`](../HEARTBEAT_DESIGN.md) — detailed protocol, key layout, fencing, cleanup phases, failure handling, and implementation impact.
+
+## Status
+
+This is a design proposal, not an implementation. The existing runtime behavior is unchanged until the manager, scripts, and tests are implemented.
