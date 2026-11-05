@@ -103,4 +103,4 @@ Implementation requires an atomic heartbeat refresh script, fencing script, `ACT
 
 Tests should cover multiple jobs in each state, zero-job servers, wrong-type keys, missing jobs, ownership mismatch, counter underflow, retry/idempotency, lifecycle calls racing with fencing, heartbeat renewal racing with fencing, rejection after fencing, and Redis Cluster slot separation.
 
-This is a target design, not an implementation. Existing runtime behavior remains unchanged until the manager, scripts, and tests are implemented.
+The implementation is now present in `HeartbeatManager.h/.cc`, `RedisJobStatus.h/.cc`, and `RedisJobScripts.inc`. It has been pushed to the repository, but has not yet been compiled or exercised against Redis; validate the C++ build, standalone Redis behavior, and Redis Cluster slot behavior before deployment.
