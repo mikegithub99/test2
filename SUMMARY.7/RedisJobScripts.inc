@@ -474,6 +474,13 @@ if redis.call('HGET', state, serverId) ~= 'DELETING' or
   return 0
 end
 
+-- Another manager may have completed Phase A after this worker fenced/read
+-- the same candidate. Recognize the committed shape without decrementing twice.
+if keytype(serverJobs) == 'none' and keytype(serverSummary) == 'none' and
+   redis.call('SISMEMBER', live, serverId) == 0 then
+  return 2
+end
+
 local refs = redis.call('SMEMBERS', serverJobs)
 if #refs ~= count then
   return redis.error_reply('server job index changed during cleanup preflight')
