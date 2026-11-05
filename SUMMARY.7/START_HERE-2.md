@@ -36,7 +36,7 @@ The project README describes the feature as requiring C++17, redis-plus-plus and
 
 ## Current public API and behavior
 
-`RedisJobStatus::Config` contains only `enabled` (defaults to true). The constructor's optional `ConfigProvider` reads only `redisJobStatusEnabled` by default. Server type and server ID are passed explicitly to `registerServer(serverType, serverId, ...)`; neither is read from the environment or host registry.
+`RedisJobStatus::Config` contains `enabled` (defaults to true), `serverType`, and `serverId`. The constructor's default configuration reads `redisJobStatusEnabled`, `redisJobStatusServerType`, and `redisJobStatusServerId` through `get_reg_val()`. A custom `ConfigProvider` must populate all three values.
 
 Enablement accepts true/false, 1/0, and yes/no (case-insensitive); empty/unset defaults to enabled. Configuration is captured when the object is constructed. When disabled, Redis is not initialized/accessed: result-returning mutators return `Result::Disabled`, void mutators do nothing, and read APIs return empty collections.
 
@@ -44,7 +44,7 @@ The main API includes:
 - `createPendingJob(jobId, metadata)`
 - `transitionJob(jobId, State)`
 - `completeJob(jobId)`
-- `registerServer(serverType, serverId, serverTypeMetadata, serverMetadata)`
+- `registerServer(serverTypeMetadata, serverMetadata)`
 - `refreshHeartbeat(ttlSeconds)`
 - `getServerTypes()`
 - `getTypeSummary(serverType)`
@@ -60,7 +60,7 @@ Valid lifecycle transitions are PENDING → ACTIVE, ACTIVE → SUSPENDED, and SU
 - JobAlreadyExists=5
 - Disabled=6
 
-Worker identity is set explicitly by `registerServer(serverType, serverId, ...)` and retained by the `RedisJobStatus` object. Job storage uses a length-prefixed composite reference derived from server ID and original job ID, while the hash's `jobId` field preserves the original application job ID for display.
+Worker identity is loaded from host configuration when the `RedisJobStatus` object is constructed and retained by that object. Any instance used for lifecycle calls must be constructed with the same configured identity; `registerServer()` only registers the configured identity and metadata. Job storage uses a length-prefixed composite reference derived from server ID and original job ID, while the hash's `jobId` field preserves the original application job ID for display.
 
 ## Redis key layout and Cluster constraints
 
