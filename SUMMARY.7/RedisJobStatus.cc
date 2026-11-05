@@ -192,6 +192,8 @@ RedisJobStatus::Config defaultConfig()
 {
   RedisJobStatus::Config config;
   config.enabled = parseEnabledFlag(get_reg_val("redisJobStatusEnabled"));
+  config.serverType = get_reg_val("redisJobStatusServerType");
+  config.serverId = get_reg_val("redisJobStatusServerId");
   return config;
 }
 } // namespace
@@ -200,6 +202,8 @@ RedisJobStatus::RedisJobStatus(ConfigProvider provider)
 {
   const Config config = provider ? provider() : defaultConfig();
   m_enabled = config.enabled;
+  m_serverType = config.serverType;
+  m_serverId = config.serverId;
   if (m_enabled)
   {
     m_client = RedisClient::Instance();
@@ -289,16 +293,12 @@ RedisJobStatus::Result RedisJobStatus::completeJob(const string& jobId)
 }
 
 void RedisJobStatus::registerServer(
-    const string& serverType,
-    const string& serverId,
     const map<string, string>& serverTypeMetadata,
     const map<string, string>& serverMetadata)
 {
   if (!m_enabled) return;
-  validateIdentifier(serverType, "serverType", true);
-  validateIdentifier(serverId, "serverId");
-  m_serverType = serverType;
-  m_serverId = serverId;
+  validateIdentifier(m_serverType, "serverType", true);
+  validateIdentifier(m_serverId, "serverId");
   for (const auto& item : serverTypeMetadata)
   {
     if (item.first.empty() || item.first == "createdByServerId" ||
