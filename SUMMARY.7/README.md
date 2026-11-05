@@ -73,7 +73,6 @@ The C++ result values are part of the Lua/C++ interface and must remain aligned:
 | `Disabled` | 6 |
 | `ServerNotActive` | 7 |
 | `ServerNotActive` | 7 |
-| `ServerNotActive` | 7 |
 
 ## Metadata behavior and reserved fields
 
@@ -153,7 +152,7 @@ The type-summary metadata initialization script receives the creation timestamp,
 
 ## Source files
 
-- `RedisClient.h/.cc` — Redis client configuration and singleton wrapper (if present in this directory).
+- `RedisClient.h/.cc` — shared Redis client dependency currently located in the repository's separate `.7/` directory; it is included/linked by this implementation, not mirrored into `SUMMARY.7/`.
 - `RedisJobStatus.h/.cc` — public API and C++ implementation.
 - `RedisJobScripts.inc` — embedded Lua scripts used by the implementation.
 - `HeartbeatManager.h/.cc` — process-wide background worker that fences expired IDs, validates and removes their per-type artifacts, then removes registry membership in a separate Redis Cluster slot.
@@ -171,30 +170,14 @@ No build, unit test, Redis integration test, or Redis Cluster test was run as pa
 
 ## Heartbeat cleanup manager
 
-`HeartbeatManager.h/.cc` implements the background cleanup worker described in
-`HEARTBEAT_DESIGN.md`. Start one manager in the process/service responsible for
-Redis cleanup, after the host registry and Redis client configuration are ready:
-
-```cpp
-#include "RedisJobStatus.h"
-#include "HeartbeatManager.h"
-
-int main()
-{
-  RedisJobStatus status;
-  status.registerServer(typeMetadata, serverMetadata);
-
-  // One cleanup manager can serve all registered server types/IDs.
-  HeartbeatManager cleanup(std::chrono::seconds(5));
-
-  // Start the worker's normal work and keep both objects alive.
-  runWorker();
-}
-```
-
-The manager scans the registry, fences expired IDs in their per-type Redis
-Cluster slot, removes their jobs and per-server summary in Phase A, then
-removes the ID from the registry in Phase B. The terminal `DELETING` state is
+`HeartbeatManager.h/.cc` implements the process-wide background cleanup worker
+described in `HEARTBEAT_DESIGN.md`. It is started automatically, once per
+process, when the first enabled `RedisJobStatus` object is constructed. The host
+configuration registry and Redis client settings must be initialized first.
+The manager scans registered IDs; its per-type fence only considers an
+`ACTIVE` ID after its first heartbeat has published live-set membership. It
+fences expired IDs in their per-type Redis Cluster slot, removes their jobs and
+per-server summary in Phase A, then removes the ID from the registry in Phase B. The terminal `DELETING` state is
 retained to prevent accidental reactivation of a process ID and to make a
 crash between phases recoverable. Since server IDs are guaranteed unique and
 never reused, a replacement process registers under a different ID.
