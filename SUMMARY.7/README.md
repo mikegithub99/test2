@@ -72,7 +72,6 @@ The C++ result values are part of the Lua/C++ interface and must remain aligned:
 | `JobAlreadyExists` | 5 |
 | `Disabled` | 6 |
 | `ServerNotActive` | 7 |
-| `ServerNotActive` | 7 |
 
 ## Metadata behavior and reserved fields
 
@@ -104,7 +103,7 @@ The following system metadata fields are initialized on first creation of a type
 
 - `meta:createdAt` — UTC timestamp in ISO-8601 form.
 
-These values are set with `HSETNX`, so later registrations do not overwrite them. Caller-supplied server-type metadata named `createdAt` is rejected. These reserved names are centralized in `RedisJobStatus.cc` as well.
+This value is set with `HSETNX`, so later registrations do not overwrite it. Caller-supplied server-type metadata named `createdAt` is rejected. This reserved name is centralized in `RedisJobStatus.cc`.
 
 Server-instance metadata currently has no additional reserved field names beyond the requirement that field names are non-empty.
 
@@ -183,6 +182,6 @@ crash between phases recoverable. Since server IDs are guaranteed unique and
 never reused, a replacement process registers under a different ID.
 
 Compile `HeartbeatManager.cc` alongside `RedisJobStatus.cc` and
-`RedisClient.cc`, with the same C++17, redis-plus-plus, hiredis, and host
+`.7/RedisClient.cc` (with `.7/` on the include path), with the same C++17, redis-plus-plus, hiredis, and host
 configuration dependencies. No build or Redis integration test has been run
 for this implementation yet.
