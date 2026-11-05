@@ -56,7 +56,7 @@ end
 if current ~= 'ACTIVE' then return 0 end
 -- A freshly registered process is not a cleanup candidate until its first
 -- successful heartbeat has published live-set membership.
-if not redis.call('SISMEMBER', live, ARGV[1]) then return 0 end
+if redis.call('SISMEMBER', live, ARGV[1]) == 0 then return 0 end
 redis.call('HSET', state, ARGV[1], 'DELETING')
 return 1
 )lua";
@@ -104,8 +104,8 @@ for i = 1, count do
   if owner ~= serverId or jobType ~= ARGV[3 + count] then
     return redis.error_reply('job ownership mismatch')
   end
-  if not redis.call('SISMEMBER', serverJobs, ref) or
-     not redis.call('SISMEMBER', typeJobs, ref) then
+  if redis.call('SISMEMBER', serverJobs, ref) ~= 1 or
+     redis.call('SISMEMBER', typeJobs, ref) ~= 1 then
     return redis.error_reply('job index membership missing')
   end
   if status == 'PENDING' then pending = pending + 1
