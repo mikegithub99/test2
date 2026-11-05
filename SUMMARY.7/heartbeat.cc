@@ -1,10 +1,9 @@
 /**
  * @file heartbeat.cc
- * @brief Host-application integration example for RedisHeartbeatManager.
+ * @brief Host-application integration example for a worker/server process.
  *
- * No separate heartbeat thread or HeartbeatRunner is required here.
- * RedisHeartbeatManager starts once per process after registerServer() and
- * refreshes the configured server ID every 10 seconds with a 30-second TTL.
+ * registerServer() starts this process's own heartbeat publisher. The central
+ * RedisHeartbeatManager cleanup service runs separately.
  */
 
 #include "RedisJobStatus.h"
@@ -21,12 +20,11 @@ int main()
   RedisJobStatus status;
   status.registerServer();
 
-  // The process-wide RedisHeartbeatManager is now running. It refreshes this
-  // process's heartbeat and independently scans for expired registered IDs.
+  // This process now publishes its own heartbeat every 10 seconds with a
+  // 30-second TTL. The separate central service performs stale-server cleanup.
   runWorker();
 
-  // On orderly shutdown, process exit stops the manager thread. If the worker
-  // exits while the process remains alive, the heartbeat continues; callers
-  // should stop the application process when this server instance is retired.
+  // Destroying status stops this process's heartbeat publisher. The central
+  // cleanup service observes the heartbeat expiry and removes stale artifacts.
   return 0;
 }
