@@ -1,0 +1,138 @@
+# Heartbeat Failure and Server Artifact Cleanup Design
+
+## Purpose and required behavior
+
+A server instance is considered failed when its heartbeat key expires. Failure is not merely a dashboard liveness change: it triggers removal of **all Redis artifacts owned by that `serverType/serverId`**.
+
+Cleanup must:
+
+- Delete every job hash owned by the failed server.
+- Remove each job reference from the server-level and server-type job indexes.
+- Delete the server summary hash, including its counters and metadata.
+- Delete the heartbeat key and remove the server from the live-server index.
+- Remove the server ID from the registered-server directory once cleanup is safely committed.
+- Decrement the server-type summary counters for every deleted job: the matching state counter (`pending`, `active`, or `suspended`) and `total`.
+- Preserve the server-type summary hash and its metadata. Its counters must represent the remaining jobs owned by all surviving servers of that type. Do not delete the type or its descriptive metadata merely because one instance failed.
+
+This is destructive cleanup. A server that resumes after its heartbeat expires is treated as a new registration/incarnation; its old jobs and server summary are not restored.
+
+## Existing key layout
+
+The current implementation uses these relevant keys:
+
+| Key | Purpose |
+|---|---|
+| `servers:{registry}:types` | Global set of known server types |
+| `servers:{registry}:type:<serverType>` | Set of registered server IDs |
+| `summary:type:{<serverType>}` | Type counters and metadata |
+| `summary:server:{<serverType>}:<serverId>` | Per-server counters and metadata |
+| `job:{<serverType>}:<serverId-length>:<serverId>:<jobId>` | Per-job hash |
+| `jobs:type:{<serverType>}` | Type-wide set of composite job references |
+| `jobs:server:{<serverType>}:<serverId>` | Per-server set of composite job references |
+| `heartbeat:server:{<serverType>}:<serverId>` | Heartbeat string with TTL |
+
+The job, index, summary, and heartbeat keys use the `{serverType}` hash tag. The registration directory uses `{registry}`. These are different Redis Cluster slots.
+
+## Redis Cluster constraint
+
+A single Lua script cannot atomically access both the type-partitioned lifecycle keys and the global `{registry}` keys in Redis Cluster. A cleanup script that tries to delete jobs and also `SREM` the current registered-server set will fail with a cross-slot error.
+
+Therefore cleanup is a coordinated, idempotent protocol with two same-slot phases. Do not attempt to combine the global registry keys and per-type keys in one Lua script.
+
+## Recommended key additions
+
+Add a per-type live-server set:
+
+- `servers:live:{<serverType>}`
+
+It shares the `{serverType}` hash tag with the heartbeat, jobs, and summaries. A successful heartbeat refresh should atomically:
+
+1. Validate the live-set key type.
+2. Set the heartbeat value with the requested positive TTL.
+3. Add the server ID to `servers:live:{<serverType>}`.
+
+Use a Lua script for those operations so the heartbeat and live-set membership cannot diverge because of an interrupted client sequence. Registration should also establish the server's current incarnation as described below.
+
+The existing `servers:{registry}:type:<serverType>` set remains the discovery directory during migration, but cleanup must remove its member in the separate registry phase.
+
+## Cleanup protocol
+
+A cleanup worker periodically obtains candidate IDs from `servers:live:{<serverType>}`. It invokes a cleanup Lua script for each candidate, passing the candidate server ID and its expected incarnation token.
+
+### Phase A — per-type cleanup (one hash slot)
+
+The script receives only keys with the `{serverType}` hash tag, including:
+
+- `servers:live:{<serverType>}`
+- The candidate's heartbeat key.
+- The candidate's server job index.
+- The type-wide job index.
+- The candidate's server summary.
+- The type summary.
+
+The script must first check that the heartbeat is still absent/expired and that the candidate's incarnation still matches the expected token. If a heartbeat exists or the incarnation differs, it must make no changes and report that the candidate is live or has been replaced.
+
+If the heartbeat is absent and the incarnation matches, the script must preflight all data before writing:
+
+1. Validate expected Redis key types (SET for indexes/live set, HASH for summaries and job hashes, and the expected heartbeat type).
+2. Read the server's job references from its server job index.
+3. Resolve each job key from the server type and composite reference, and verify that the job hash belongs to the exact server type and server ID.
+4. Validate each job status is one of `PENDING`, `ACTIVE`, or `SUSPENDED`.
+5. Count jobs by status. These counts, rather than the server summary, are authoritative for the type-counter decrements.
+6. Verify the type summary has valid integer counters with sufficient values for each decrement. Validate the relevant type job index membership for every reference.
+
+Only after all checks pass, perform the cleanup atomically:
+
+- For each job, remove its reference from `jobs:type:{<serverType>}` and delete its job hash.
+- Delete `jobs:server:{<serverType>}:<serverId>`.
+- Decrement `pending`, `active`, and `suspended` in `summary:type:{<serverType>}` by the corresponding counted amounts. Decrement `total` by the total number of deleted jobs. A zero decrement may be skipped.
+- Delete `summary:server:{<serverType>}:<serverId>`.
+- Delete the heartbeat key.
+- Remove the server ID from `servers:live:{<serverType>}`.
+
+The script must not decrement counters based on the server summary: that hash is being deleted and could be stale or inconsistent. It must not change type-summary metadata or delete the type summary. On inconsistent data, return an error/result without partial cleanup; validate everything that can fail before the first write because Redis Lua scripts do not provide general rollback after runtime errors.
+
+An empty server job index means there are no jobs to delete; the type counters are unchanged, and the server summary can still be deleted.
+
+### Phase B — global registry cleanup (registry hash slot)
+
+After Phase A reports that it committed cleanup, remove the server ID from `servers:{registry}:type:<serverType>` in a separate registry-slot operation. Keep `servers:{registry}:types` and the type summary: other servers may still use the type, and the type's metadata is retained.
+
+This phase must be idempotent and safe to retry after a worker crash. The cleanup coordinator must also guard against a new incarnation registering between Phase A and Phase B. Use a unique incarnation/generation token for each server process lifetime, stored with the registry entry, and remove the registry entry only if it still contains the expected token. A restarted process registers a new token, so delayed cleanup for the old process cannot unregister the new process.
+
+To support this compare-and-remove operation, replace or supplement the per-type registry SET with a per-type HASH mapping `serverId -> incarnationToken`. The global type-discovery SET can remain unchanged. Registry registration and conditional removal scripts operate only on `{registry}` keys and remain cluster-safe.
+
+## Incarnation and restart rules
+
+A server ID alone is not sufficient to distinguish a failed process from a restarted process reusing the same ID. Each process lifetime must have a unique incarnation token (for example, a UUID generated at startup).
+
+- Registration publishes `serverId -> incarnationToken` in the registry.
+- Heartbeat refresh publishes the same token alongside the heartbeat and live-set membership.
+- Cleanup is conditional on the expected token.
+- A new process using the same server ID publishes a different token.
+- A delayed cleanup for an old token must never delete jobs or summaries created by the new incarnation.
+
+The heartbeat value should carry or be paired with the incarnation token. The cleanup script compares the expected token to the current token before deleting anything. If tokens do not match, cleanup is stale and must stop.
+
+## Operational behavior and failure handling
+
+- Choose a heartbeat TTL comfortably longer than the heartbeat interval, allowing for normal scheduling pauses and transient Redis latency.
+- A temporary heartbeat delay shorter than the TTL does not trigger cleanup.
+- Once the TTL expires, cleanup is permanent for that incarnation. A returning process must register a fresh incarnation and start with no prior jobs or server summary.
+- Retry transient Redis failures. Both phases are idempotent; a retry must not decrement type counters twice. Phase A achieves this by deleting the server's job index and artifacts in the same atomic script. If the artifacts are already absent, it must report already-cleaned and make no further counter changes.
+- If Phase A finds wrong-type keys, missing indexed job hashes, ownership mismatches, invalid statuses, or insufficient/non-integer type counters, stop and report inconsistent data. Do not guess counter adjustments or delete only part of the server's data. Alert/repair the inconsistency explicitly.
+- Monitor cleanup failures and the age/count of expired candidates so stale entries do not silently accumulate.
+- Restrict cleanup permissions to the trusted cleanup worker; it can permanently delete job records and summary metadata.
+
+## API and implementation impact
+
+A future implementation should add:
+
+- A heartbeat refresh Lua script that sets the TTL-bearing heartbeat and adds the ID to the per-type live set atomically.
+- A cleanup API/worker operation that accepts `serverType`, `serverId`, and the expected incarnation token, and reports cleaned, still-live/replaced, already-cleaned, or inconsistent outcomes.
+- A registry representation and Lua operations that register an incarnation and conditionally remove only the matching incarnation.
+- A cleanup Lua script embedded in `RedisJobScripts.inc`, with all Phase A keys passed explicitly through `KEYS`.
+- Tests covering multiple jobs in each state, zero-job servers, wrong-type keys, missing jobs, counter underflow, retry/idempotency, heartbeat renewal during cleanup, and server restart with the same server ID.
+- Redis Cluster tests proving each Lua script touches only one hash slot.
+
+The existing public API does not currently implement this cleanup behavior. This document specifies the target design; it does not change runtime behavior by itself.
