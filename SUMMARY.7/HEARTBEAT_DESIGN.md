@@ -74,7 +74,7 @@ Only after all checks pass, atomically:
 - Delete this server's heartbeat and remove only its ID from `servers:live:{<serverType>}`.
 - Retain this ID's `DELETING` field in `servers:state:{<serverType>}` as a terminal marker. Do not reactivate or reuse the ID.
 
-Do not delete the type-wide job index, type summary, global type-discovery set, or any other server's keys/references. With zero jobs, counters are unchanged but per-server artifacts and state can still be removed.
+Do not delete the type-wide job index, type summary, global type-discovery set, or any other server's keys/references. With zero jobs, counters are unchanged but per-server artifacts and the server summary is removed and the terminal `DELETING` marker remains.
 
 Redis Lua scripts serialize commands but do not roll back earlier writes after a runtime error. Preflight all possible failure conditions before writing. On inconsistent data, return an error without partial cleanup. Phase A must be idempotent: once the server job index and artifacts are removed, a retry must not decrement counters again. Retain the terminal `DELETING` state field so the same process ID cannot be reactivated. If a worker crashes after Phase A but before Phase B, a later pass recognizes `DELETING` with the server job index and server summary absent and safely retries Phase B.
 
