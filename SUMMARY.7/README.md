@@ -73,6 +73,7 @@ The C++ result values are part of the Lua/C++ interface and must remain aligned:
 | `Disabled` | 6 |
 | `ServerNotActive` | 7 |
 | `ServerNotActive` | 7 |
+| `ServerNotActive` | 7 |
 
 ## Metadata behavior and reserved fields
 
@@ -102,10 +103,9 @@ The reserved job-field names are centralized in `RedisJobStatus.cc` and checked 
 
 The following system metadata fields are initialized on first creation of a type summary:
 
-- `meta:createdByServerId` — server ID that first caused the type summary to be initialized.
 - `meta:createdAt` — UTC timestamp in ISO-8601 form.
 
-These values are set with `HSETNX`, so later registrations do not overwrite them. Caller-supplied server-type metadata named `createdByServerId` or `createdAt` is rejected. These reserved names are centralized in `RedisJobStatus.cc` as well.
+These values are set with `HSETNX`, so later registrations do not overwrite them. Caller-supplied server-type metadata named `createdAt` is rejected. These reserved names are centralized in `RedisJobStatus.cc` as well.
 
 Server-instance metadata currently has no additional reserved field names beyond the requirement that field names are non-empty.
 
@@ -121,6 +121,8 @@ Server-instance metadata currently has no additional reserved field names beyond
 | SET | `jobs:type:{<serverType>}` | Composite references for current jobs of a type |
 | SET | `jobs:server:{<serverType>}:<serverId>` | Composite references for current jobs owned by a server |
 | STRING with TTL | `heartbeat:server:{<serverType>}:<serverId>` | Last heartbeat value for a server |
+| SET | `servers:live:{<serverType>}` | Server IDs that have successfully published a heartbeat |
+| HASH | `servers:state:{<serverType>}` | Per-server lifecycle state: `ACTIVE` or terminal `DELETING` |
 
 The job key and both job indexes use a length-prefixed composite reference derived from the configured server ID and original application job ID. This avoids ambiguity if a server ID contains separator characters. The job hash's `jobId` field retains the original application job ID for display.
 
@@ -145,15 +147,16 @@ The scripts are embedded as C++ raw string literals in `RedisJobScripts.inc`, wh
 
 The C++ implementation uses `appendMetadataArgs()` to append a metadata pair count followed by the accepted field/value pairs. This keeps the C++ argument encoding consistent across job metadata, server-type metadata, and server-instance metadata. The include/exclude policy is kept separate from the argument-formatting helper.
 
-For job creation, the five keys are the job hash, type job index, server job index, type summary, and server summary. `ARGV[1..4]` contain the original job ID, server type, server ID, and composite reference. `ARGV[5]` is the number of accepted job metadata pairs; pairs begin at `ARGV[6]`.
+For job creation, the six keys are the job hash, type job index, server job index, type summary, server summary, and per-type lifecycle state hash. The script rejects writes unless this server ID is `ACTIVE`. `ARGV[1..4]` contain the original job ID, server type, server ID, and composite reference. `ARGV[5]` is the number of accepted job metadata pairs; pairs begin at `ARGV[6]`.
 
-The type-summary metadata initialization script receives the registering server ID, creation timestamp, metadata pair count, then the metadata pairs. The server-summary metadata script receives the metadata pair count followed by its pairs. Keep these layouts synchronized with the corresponding C++ argument construction whenever either side changes.
+The type-summary metadata initialization script receives the creation timestamp, metadata pair count, then the metadata pairs. It does not duplicate the server ID in type metadata. The server-summary metadata script receives the metadata pair count followed by its pairs. Keep these layouts synchronized with the corresponding C++ argument construction whenever either side changes.
 
 ## Source files
 
 - `RedisClient.h/.cc` — Redis client configuration and singleton wrapper (if present in this directory).
 - `RedisJobStatus.h/.cc` — public API and C++ implementation.
 - `RedisJobScripts.inc` — embedded Lua scripts used by the implementation.
+- `HeartbeatManager.h/.cc` — process-wide background worker that fences expired IDs, validates and removes their per-type artifacts, then removes registry membership in a separate Redis Cluster slot.
 - `heartbeat.cc` — example heartbeat runner that refreshes immediately and then periodically on a worker thread.
 - `examples/` — example programs, where included.
 - `redis_job_correctness.py` — Redis data correctness checker, where included.
@@ -161,7 +164,7 @@ The type-summary metadata initialization script receives the registering server 
 
 ## Build and validation
 
-The implementation requires C++17, redis-plus-plus, hiredis, and a host-provided `get_reg_val(const std::string&)` implementation. Initialize the host configuration registry before constructing `RedisJobStatus` or making the first `RedisClient::Instance()` call. Exact compiler and linker flags depend on the host application's Redis client installation.
+The implementation requires C++17, redis-plus-plus, hiredis, and a host-provided `get_reg_val(const std::string&)` implementation. Constructing an enabled `RedisJobStatus` starts one process-wide `HeartbeatManager` worker (five-second scan interval); it scans registered IDs so it can recover interrupted cleanup phases. A server is eligible for fencing only after its first successful heartbeat has published it to the live set. Initialize the host configuration registry before constructing `RedisJobStatus` or making the first `RedisClient::Instance()` call. Exact compiler and linker flags depend on the host application's Redis client installation.
 
 No build, unit test, Redis integration test, or Redis Cluster test was run as part of the metadata-helper refactor. Validate against the project's actual build and test setup, including standalone Redis and Redis Cluster, before deploying.
 
