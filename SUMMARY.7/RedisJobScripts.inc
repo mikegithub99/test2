@@ -2,8 +2,9 @@
  * @file RedisJobScripts.inc
  * @brief Embedded Lua scripts for RedisJobStatus.
  *
- * This file is included inside RedisJobStatus.cc's anonymous namespace.
- * Script bodies are C++ raw string literals so they ship with the executable
+ * This file is included by RedisJobStatus.cc and RedisHeartbeatManager.cc.
+ * Each translation unit includes it in its own implementation scope. Script
+ * bodies are C++ raw string literals so they ship with the executable
  * without a generator or runtime script-file lookup.
  *
  * Lua features used by these scripts:
@@ -391,6 +392,9 @@ return 1
 // ---------------------------------------------------------------------------
 // RedisHeartbeatManager scripts. Kept in this shared include alongside the
 // job lifecycle and heartbeat-refresh scripts so all Lua remains in one file.
+// Fence KEYS: heartbeat, state hash, server jobs set, server summary hash,
+// live set. ARGV[1]: serverId. Returns 0=not expired/not eligible,
+// 1=fenced or already fenced, 2=Phase A already completed.
 // ---------------------------------------------------------------------------
 
 const char* const kFenceExpiredServerScript = R"lua(
@@ -430,6 +434,10 @@ redis.call('HSET', state, ARGV[1], 'DELETING')
 return 1
 )lua";
 
+// Cleanup KEYS[1..7]: live set, state hash, heartbeat, server jobs set,
+// type jobs set, server summary hash, type summary hash. KEYS[8..] are the
+// candidate job hashes in the same order as ARGV[3..]. ARGV[1]=serverId,
+// ARGV[2]=job count, ARGV[3..2+count]=composite refs, ARGV[3+count]=type.
 const char* const kCleanupExpiredServerScript = R"lua(
 local live = KEYS[1]
 local state = KEYS[2]
