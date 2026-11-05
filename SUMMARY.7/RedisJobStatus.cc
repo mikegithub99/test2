@@ -6,21 +6,16 @@
 #include <cstddef>
 #include <cstdint>
 #include <map>
-#include <mutex>
 #include <string>
 #include <vector>
 
 #include <algorithm>
-#include <chrono>
-#include <condition_variable>
 #include <cctype>
 #include <ctime>
 #include <iomanip>
-#include <iostream>
 #include <iterator>
 #include <sstream>
 #include <stdexcept>
-#include <thread>
 #include <utility>
 
 #include "RedisJobStatus.h"
@@ -480,9 +475,8 @@ void RedisJobStatus::registerServer(
             redis, kSetServerSummaryMetadataScript, serverKeys, serverArgs);
       });
 
-  // Each server process publishes only its own heartbeat. Cleanup is
-  // handled by the separately deployed central RedisHeartbeatManager.
-  startHeartbeatPublisher();
+  // Heartbeat publication is deliberately not started here. The worker
+  // process owns its refresh schedule and calls refreshHeartbeat() explicitly.
 }
 
 vector<string> RedisJobStatus::getServerTypes()
