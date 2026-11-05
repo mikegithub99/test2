@@ -325,11 +325,11 @@ void RedisJobStatus::heartbeatLoop()
     catch (const std::exception& error)
     {
       std::cerr << "RedisJobStatus: heartbeat refresh failed: "
-                << error.what() << '\\n';
+                << error.what() << '\n';
     }
     catch (...)
     {
-      std::cerr << "RedisJobStatus: heartbeat refresh failed: unknown exception\\n";
+      std::cerr << "RedisJobStatus: heartbeat refresh failed: unknown exception\n";
     }
     lock.lock();
     m_heartbeatWakeup.wait_for(
