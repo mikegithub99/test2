@@ -16,7 +16,7 @@ registerServer(serverTypeMetadata, serverMetadata);
 
 Do not add a UUID/incarnation argument, change lifecycle API signatures, or duplicate `serverId` in metadata or type-summary metadata. Heartbeat value is the configured `serverId`.
 
-`RedisJobStatus` retains its existing configured identity and Redis client; it does not generate a second UUID or own the cleanup thread. A separate `HeartbeatManager` owns the background thread and its Redis access.
+`RedisJobStatus` retains its existing configured identity and Redis client; it does not generate a second UUID or own the cleanup thread. A single process-wide `RedisHeartbeatManager` owns both the local process heartbeat thread and the expired-server cleanup scan. Each distributed process runs its own manager; do not run a second heartbeat runner in the same process.
 
 ## Existing key layout
 
@@ -90,17 +90,17 @@ Expiry is permanent for that process ID. A process that resumes after fencing ha
 
 ## Operational behavior
 
-- Set heartbeat TTL comfortably longer than the refresh interval to allow for scheduling pauses and transient Redis latency.
+- The default policy is a 10-second refresh interval, 30-second TTL, and five-second cleanup scan. The 3:1 TTL-to-refresh ratio allows about 20 seconds of missed-refresh tolerance; tune it to the application's pause and Redis-latency profile.
 - Retry transient Redis failures; both phases must be idempotent.
 - If Phase A finds wrong-type keys, missing job hashes, ownership mismatches, invalid statuses, missing type-index references, or invalid/insufficient counters, stop and report inconsistent data. Do not guess or partially clean.
 - Monitor cleanup failures and expired-candidate age/count.
-- Restrict destructive cleanup permissions to the trusted `HeartbeatManager`.
+- Restrict destructive cleanup permissions to the trusted `RedisHeartbeatManager`.
 - Never run Phase B unless Phase A is confirmed committed.
 
 ## Implementation impact and status
 
-Implementation requires an atomic heartbeat refresh script, fencing script, `ACTIVE` checks in every lifecycle Lua script, the Phase A cleanup script in `HeartbeatManager.cc`, a registry-slot Phase B operation, and a background `HeartbeatManager` with retries and error reporting.
+Implementation uses the shared `RedisJobScripts.inc` for heartbeat refresh, fencing, lifecycle checks, and Phase A cleanup. `RedisHeartbeatManager.cc` supplies the process-local 10-second heartbeat refresh (30-second TTL), five-second cleanup scan, and registry-slot Phase B operation.
 
 Tests should cover multiple jobs in each state, zero-job servers, wrong-type keys, missing jobs, ownership mismatch, counter underflow, retry/idempotency, lifecycle calls racing with fencing, heartbeat renewal racing with fencing, rejection after fencing, and Redis Cluster slot separation.
 
-The implementation is now present in `HeartbeatManager.h/.cc`, `RedisJobStatus.h/.cc`, and `RedisJobScripts.inc`. It has been pushed to the repository, but has not yet been compiled or exercised against Redis; validate the C++ build, standalone Redis behavior, and Redis Cluster slot behavior before deployment.
+The implementation is now present in `RedisHeartbeatManager.h/.cc`, `RedisJobStatus.h/.cc`, and `RedisJobScripts.inc`. All Lua scripts, including the manager's fencing and cleanup scripts, are centralized in `RedisJobScripts.inc`. It has been pushed to the repository, but has not yet been compiled or exercised against Redis; validate the C++ build, standalone Redis behavior, and Redis Cluster slot behavior before deployment.
