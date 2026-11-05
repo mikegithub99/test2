@@ -23,14 +23,29 @@ namespace
 const char* const kFenceScript = R"lua(
 local heartbeat = KEYS[1]
 local state = KEYS[2]
+local serverJobs = KEYS[3]
+local serverSummary = KEYS[4]
 local ht = redis.call('TYPE', heartbeat).ok
 local st = redis.call('TYPE', state).ok
-if (ht ~= 'none' and ht ~= 'string') or st ~= 'hash' then
-  return redis.error_reply('wrong heartbeat/state key type')
+local jt = redis.call('TYPE', serverJobs).ok
+local mt = redis.call('TYPE', serverSummary).ok
+if ht ~= 'none' and ht ~= 'string' then
+  return redis.error_reply('wrong heartbeat key type')
+end
+if st == 'none' then
+  if ht == 'none' and jt == 'none' and mt == 'none' then return 2 end
+  return redis.error_reply('missing lifecycle state with remaining server artifacts')
+end
+if st ~= 'hash' or (jt ~= 'none' and jt ~= 'set') or
+   (mt ~= 'none' and mt ~= 'hash') then
+  return redis.error_reply('wrong lifecycle/artifact key type')
 end
 if redis.call('EXISTS', heartbeat) ~= 0 then return 0 end
 local current = redis.call('HGET', state, ARGV[1])
-if current == false then return 2 end
+if current == 'DELETING' then
+  if jt == 'none' and mt == 'none' then return 2 end
+  return 1
+end
 if current ~= 'ACTIVE' then return 0 end
 redis.call('HSET', state, ARGV[1], 'DELETING')
 return 1
@@ -111,7 +126,8 @@ if suspended > 0 then redis.call('HINCRBY', typeSummary, 'suspended', -suspended
 if total > 0 then redis.call('HINCRBY', typeSummary, 'total', -total) end
 redis.call('DEL', serverSummary, heartbeat)
 redis.call('SREM', live, serverId)
-redis.call('HDEL', state, serverId)
+-- Keep the terminal DELETING marker: this process ID is never reused.
+-- It prevents a delayed/repeated registerServer() from reactivating the ID.
 return 1
 )lua";
 
@@ -186,7 +202,8 @@ void HeartbeatManager::scanOnce()
         const string state = stateKey(type);
         if (redis.exists(heartbeat)) continue;
 
-        const vector<string> fenceKeys = {heartbeat, state};
+        const vector<string> fenceKeys = {
+            heartbeat, state, serverJobsKey(type, id), serverSummaryKey(type, id)};
         const vector<string> fenceArgs = {id};
         const auto fenced = redis.template eval<int64_t>(
             kFenceScript, fenceKeys.begin(), fenceKeys.end(),
