@@ -6,7 +6,7 @@ Set the host registry value `redisJobStatusEnabled` to `true` or `false` (also a
 
 When enabled, `RedisJobStatus` obtains the configured `RedisClient` and runs the normal Redis operations. When disabled, it does not initialize or access `RedisClient`: result-returning mutators return `RedisJobStatus::Result::Disabled`, void mutators do nothing, and read methods return empty collections. This makes status reporting optional without requiring Redis configuration or a reachable Redis server when the feature is off.
 
-The enablement setting is read when the `RedisJobStatus` object is constructed. Server identity is not read from the environment or host registry; pass it explicitly to `registerServer(serverType, serverId, ...)`. Tests/examples can inject a provider:
+The enablement setting and worker identity are read when the `RedisJobStatus` object is constructed. By default, the host registry supplies `redisJobStatusEnabled`, `redisJobStatusServerType`, and `redisJobStatusServerId`. `registerServer(serverTypeMetadata, serverMetadata)` registers that configured identity and its metadata. Tests/examples can inject a provider:
 
 ```cpp
 RedisJobStatus status([]
@@ -24,7 +24,7 @@ Production usage:
 ```cpp
 // Initialize the application registry first, including redisJobStatusEnabled.
 // Set redisJobStatusEnabled=false to disable status reporting without Redis.
-RedisJobStatus status; // reads enablement; identity is supplied to registerServer()
+RedisJobStatus status; // reads enablement and worker identity from host configuration
 
 auto client = RedisClient::Instance(); // optional direct access
 ```
