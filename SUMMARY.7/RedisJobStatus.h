@@ -146,6 +146,7 @@ private:
       const std::string& value,
       const char* name,
       bool isServerType = false);
+  void validateLifecycleIdentity(const std::string& jobId) const;
 
   bool m_enabled = true;
   std::string m_serverType;
