@@ -21,7 +21,6 @@
 #include "RedisJobStatus.h"
 
 using std::back_inserter;
-using std::chrono::seconds;
 using std::tolower;
 using std::transform;
 using std::exception;
@@ -284,54 +283,6 @@ RedisJobStatus::RedisJobStatus(ConfigProvider provider)
     m_client = RedisClient::Instance();
   }
 }
-
-// Stop the per-process publisher cleanly when this API owner is destroyed.
-RedisJobStatus::~RedisJobStatus()
-{
-  {
-    std::lock_guard<std::mutex> lock(m_heartbeatMutex);
-    m_stopHeartbeat = true;
-  }
-  m_heartbeatWakeup.notify_all();
-  if (m_heartbeatThread.joinable())
-    m_heartbeatThread.join();
-}
-
-void RedisJobStatus::startHeartbeatPublisher()
-{
-  std::lock_guard<std::mutex> lock(m_heartbeatMutex);
-  if (m_registered)
-    return;
-  m_registered = true;
-  m_stopHeartbeat = false;
-  m_heartbeatThread = std::thread(&RedisJobStatus::heartbeatLoop, this);
-}
-
-void RedisJobStatus::heartbeatLoop()
-{
-  std::unique_lock<std::mutex> lock(m_heartbeatMutex);
-  while (!m_stopHeartbeat)
-  {
-    lock.unlock();
-    try
-    {
-      refreshHeartbeat(30);
-    }
-    catch (const std::exception& error)
-    {
-      std::cerr << "RedisJobStatus: heartbeat refresh failed: "
-                << error.what() << '\n';
-    }
-    catch (...)
-    {
-      std::cerr << "RedisJobStatus: heartbeat refresh failed: unknown exception\n";
-    }
-    lock.lock();
-    m_heartbeatWakeup.wait_for(
-        lock, std::chrono::seconds(10), [this] { return m_stopHeartbeat; });
-  }
-}
-
 
 void RedisJobStatus::validateLifecycleIdentity(const string& jobId) const
 {
