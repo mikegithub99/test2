@@ -9,11 +9,11 @@ Implementation files are under [SUMMARY.7/](SUMMARY.7/). The detailed cleanup pr
 - Refresh interval: **10 seconds**.
 - Redis heartbeat TTL: **30 seconds**.
 - Cleanup scan interval: **5 seconds**.
-- Refresh occurs immediately after successful `registerServer()`, then every 10 seconds.
+- The worker client calls `refreshHeartbeat(30)` immediately after `registerServer()` completes, then waits 10 seconds between refresh attempts.
 - Expiry occurs after 30 seconds without a successful refresh. Cleanup is attempted on the next scan, so detection is normally expiry plus up to approximately one scan interval, plus Redis/network/scheduling delay.
 - A 10/30 configuration provides a 3:1 TTL-to-refresh ratio and about 20 seconds of missed-refresh tolerance. It is a sensible starting point, not a guarantee during long Redis outages, process pauses, or overload.
 
-There must be one `RedisHeartbeatManager` per application process—not one manager shared across all machines. Each process publishes its own heartbeat using its own unique configured `serverId`. Do not run a separate `HeartbeatRunner` or another heartbeat thread in the same process. `heartbeat.cc` is an integration example; the manager starts automatically after registration.
+Deploy one dedicated `RedisHeartbeatManager` cleanup service for the deployment. Each worker process publishes its own heartbeat using its own unique configured `serverId`; the worker's `clientheartbeat/heartbeat.cc` owns that process's refresh loop. Do not start a second heartbeat publisher in the same worker. The cleanup manager is independent and is not started by worker registration.
 
 ## Process identity and lifecycle
 
@@ -26,7 +26,7 @@ RedisJobStatus status;
 status.registerServer(serverTypeMetadata, serverMetadata);
 ```
 
-Registration initializes per-type state as `ACTIVE`; after registration and metadata setup complete, it starts the process-wide manager. Heartbeat refresh and job lifecycle Lua scripts require `ACTIVE`. Cleanup atomically changes the exact ID to terminal `DELETING` only after confirming its heartbeat is absent. A fenced ID cannot resume job writes or heartbeat refreshes.
+Registration initializes per-type state as `ACTIVE` and stores registry and metadata information. It does not start a heartbeat thread or manager. After `registerServer()` returns, the worker client explicitly calls `refreshHeartbeat(30)` and repeats that call on its own schedule. Heartbeat refresh and job lifecycle Lua scripts require `ACTIVE`. Cleanup atomically changes the exact ID to terminal `DELETING` only after confirming its heartbeat is absent. A fenced ID cannot resume job writes or heartbeat refreshes.
 
 ## One shared Lua include
 
@@ -67,7 +67,7 @@ The default `RedisJobStatus` constructor reads these host-application registry v
 
 `redisJobStatusEnabled` accepts `true`/`false`, `1`/`0`, and `yes`/`no`, case-insensitively. An empty or unset value defaults to enabled. Configuration is read when each `RedisJobStatus` object is constructed; the object retains its configured server identity.
 
-Keep one long-lived `RedisJobStatus` object per server process and use it for registration, lifecycle calls, and heartbeat publishing. Its heartbeat publisher is tied to that object's lifetime.
+Keep one long-lived `RedisJobStatus` object per server process and use it for registration, lifecycle calls, and heartbeat publishing. Each `RedisJobStatus` object retains its configured enabled flag, server type, server ID, and a shared pointer to the Redis client. It is not itself a singleton and does not own a heartbeat thread, timer, or refresh schedule. `RedisClient::Instance()` supplies the shared RedisClient singleton; its first initialization fixes the Redis connection configuration for the process.
 
 When disabled, the class does not initialize or access `RedisClient`. Result-returning mutators return `RedisJobStatus::Result::Disabled`, void mutators do nothing, and read methods return empty collections.
 
@@ -208,14 +208,14 @@ The type-summary metadata initialization script receives the creation timestamp,
 - `RedisJobStatus.h/.cc` — public API and C++ implementation.
 - `RedisJobScripts.inc` — the shared collection of embedded Lua scripts used by job lifecycle, heartbeat refresh, fencing, and cleanup. Keep all Lua in this file; the manager includes it rather than maintaining separate script bodies.
 - `RedisHeartbeatManager.h/.cc` and `RedisHeartbeatManagerMain.cc` — standalone central cleanup service that fences expired IDs across all server types and removes their artifacts; it does not publish a server heartbeat.
-- `heartbeat.cc` — example server process; registration starts its own heartbeat publisher. It does not start cleanup.
+- `clientheartbeat/heartbeat.cc` — example worker-process entry point; registers once and owns the repeating `refreshHeartbeat(30)` loop. It does not start cleanup.
 - `examples/` — example programs, where included.
 - `redis_job_correctness.py` — Redis data correctness checker, where included.
 - `redis_browser.py` — interactive Redis browser, where included.
 
 ## Build and validation
 
-The implementation requires C++17, redis-plus-plus, hiredis, and a host-provided `get_reg_val(const std::string&)` implementation. After `registerServer()` completes, each server process starts its own heartbeat publisher and refreshes every 10 seconds with a 30-second TTL. Deploy one separate `RedisHeartbeatManagerMain.cc` executable to scan for expired registrations every 5 seconds across all server types. A server is eligible for fencing only after its first successful heartbeat has published it to the live set. Initialize the host configuration registry before constructing `RedisJobStatus` or making the first `RedisClient::Instance()` call. Exact compiler and linker flags depend on the host application's Redis client installation.
+The implementation requires C++17, redis-plus-plus, hiredis, and a host-provided `get_reg_val(const std::string&)` implementation. After `registerServer()` completes, the worker client starts publishing heartbeats explicitly: it calls `refreshHeartbeat(30)` and waits 10 seconds between attempts. `RedisJobStatus` does not start a publisher. Deploy one separate `RedisHeartbeatManagerMain.cc` executable to scan for expired registrations every 5 seconds across all server types. A server is eligible for fencing only after its first successful heartbeat has published it to the live set. Initialize the host configuration registry before constructing `RedisJobStatus` or making the first `RedisClient::Instance()` call. Exact compiler and linker flags depend on the host application's Redis client installation.
 
 No build, unit test, Redis integration test, or Redis Cluster test has yet been run for the heartbeat-manager integration. Validate against the project's actual build and test setup, including standalone Redis and Redis Cluster, before deploying.
 
@@ -225,7 +225,7 @@ No build, unit test, Redis integration test, or Redis Cluster test has yet been 
 `RedisHeartbeatManager.h/.cc` implements the process-wide background cleanup worker
 described in `HEARTBEAT_DESIGN.md`. Build and run `RedisHeartbeatManagerMain.cc` as one dedicated service process. It is not started by worker registration. The host
 configuration registry and Redis client settings must be initialized first.
-Each server process refreshes its own heartbeat through `RedisJobStatus`; the central manager scans registered IDs; its per-type fence only considers an
+Each server process refreshes its own heartbeat by explicitly calling `RedisJobStatus::refreshHeartbeat()` from its client-owned loop; the central manager scans registered IDs; its per-type fence only considers an
 `ACTIVE` ID after its first heartbeat has published live-set membership. It
 fences expired IDs in their per-type Redis Cluster slot, removes their jobs and
 per-server summary in Phase A, then removes the ID from the registry in Phase B. The terminal `DELETING` state is
