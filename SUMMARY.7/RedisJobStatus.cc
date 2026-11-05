@@ -6,6 +6,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <map>
+#include <mutex>
 #include <string>
 #include <vector>
 
@@ -20,6 +21,7 @@
 #include <utility>
 
 #include "RedisJobStatus.h"
+#include "HeartbeatManager.h"
 
 using std::back_inserter;
 using std::chrono::seconds;
@@ -272,6 +274,15 @@ RedisJobStatus::Config defaultConfig()
   config.serverId = get_reg_val("redisJobStatusServerId");
   return config;
 }
+void startHeartbeatManager()
+{
+  static std::once_flag startOnce;
+  std::call_once(startOnce, [] {
+    // One process-wide manager owns the background thread. Its static
+    // lifetime keeps cleanup independent of individual API object lifetimes.
+    static HeartbeatManager manager;
+  });
+}
 } // namespace
 
 RedisJobStatus::RedisJobStatus(ConfigProvider provider)
@@ -283,6 +294,7 @@ RedisJobStatus::RedisJobStatus(ConfigProvider provider)
   if (m_enabled)
   {
     m_client = RedisClient::Instance();
+    startHeartbeatManager();
   }
 }
 
