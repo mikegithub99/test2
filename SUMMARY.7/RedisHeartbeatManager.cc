@@ -86,11 +86,11 @@ void RedisHeartbeatManager::cleanupLoop()
     catch (const std::exception& error)
     {
       std::cerr << "RedisHeartbeatManager: cleanup scan failed: "
-                << error.what() << '\\n';
+                << error.what() << '\n';
     }
     catch (...)
     {
-      std::cerr << "RedisHeartbeatManager: cleanup scan failed: unknown exception\\n";
+      std::cerr << "RedisHeartbeatManager: cleanup scan failed: unknown exception\n";
     }
     lock.lock();
     m_wakeup.wait_for(lock, m_scanInterval, [this] { return m_stopping; });
