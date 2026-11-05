@@ -43,7 +43,7 @@ The current implementation uses these relevant keys:
 
 The job, index, summary, and heartbeat keys use the `{serverType}` hash tag. The registration directory uses `{registry}`. These are different Redis Cluster slots.
 
-The type summary is a shared HASH. Its counters and metadata remain type-wide; server membership is represented separately within that same hash using fields named `server:<serverId>`. Each such field stores the current incarnation token for that server ID. This is a new design convention; the current implementation does not yet maintain these membership fields.
+The type summary is a shared HASH containing type-level counters, type metadata, and (under this proposed design) one membership field per registered server. It does not contain job references. Server membership is represented within that same hash using fields named `server:<serverId>`; each field stores the current incarnation token for that server ID. On heartbeat failure, cleanup removes only the failed server's membership field with `HDEL`, while preserving the type summary, its counters, metadata, and all other servers' membership fields. This is a new design convention; the current implementation does not yet maintain these membership fields. Job references are stored only in `jobs:type:{<serverType>}` and `jobs:server:{<serverType>}:<serverId>`.
 
 ## Redis Cluster constraint
 
@@ -104,7 +104,7 @@ Only after all checks pass, perform the cleanup atomically:
 - Delete the heartbeat key.
 - Remove the server ID from `servers:live:{<serverType>}`.
 
-The script must not decrement counters based on the server summary: that hash is being deleted and could be stale or inconsistent. It must not change type-summary metadata or delete the type summary. On inconsistent data, return an error/result without partial cleanup; validate everything that can fail before the first write because Redis Lua scripts do not provide general rollback after runtime errors.
+The script must not decrement counters based on the server summary: that hash is being deleted and could be stale or inconsistent. It must not treat the type summary as a job-reference index, change type-summary metadata, or delete the type summary. On inconsistent data, return an error/result without partial cleanup; validate everything that can fail before the first write because Redis Lua scripts do not provide general rollback after runtime errors.
 
 An empty server job index means there are no jobs to delete; the type counters are unchanged, and the server summary and the matching type-summary membership field can still be deleted.
 
