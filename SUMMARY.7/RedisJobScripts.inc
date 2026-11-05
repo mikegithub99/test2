@@ -386,3 +386,148 @@ redis.call('SET', heartbeatKey, ARGV[1], 'EX', ARGV[2])
 redis.call('SADD', liveKey, ARGV[1])
 return 1
 )lua";
+
+
+// ---------------------------------------------------------------------------
+// RedisHeartbeatManager scripts. Kept in this shared include alongside the
+// job lifecycle and heartbeat-refresh scripts so all Lua remains in one file.
+// ---------------------------------------------------------------------------
+
+const char* const kFenceExpiredServerScript = R"lua(
+local heartbeat = KEYS[1]
+local state = KEYS[2]
+local serverJobs = KEYS[3]
+local serverSummary = KEYS[4]
+local live = KEYS[5]
+local ht = redis.call('TYPE', heartbeat).ok
+local st = redis.call('TYPE', state).ok
+local jt = redis.call('TYPE', serverJobs).ok
+local mt = redis.call('TYPE', serverSummary).ok
+local lt = redis.call('TYPE', live).ok
+
+if (ht ~= 'none' and ht ~= 'string') or
+   (st ~= 'none' and st ~= 'hash') or
+   (jt ~= 'none' and jt ~= 'set') or
+   (mt ~= 'none' and mt ~= 'hash') or
+   (lt ~= 'none' and lt ~= 'set') then
+  return redis.error_reply('wrong type during heartbeat fencing')
+end
+
+if redis.call('EXISTS', heartbeat) == 1 then return 0 end
+
+local current = redis.call('HGET', state, ARGV[1])
+if current == 'DELETING' then
+  if jt == 'none' and mt == 'none' and
+     redis.call('SISMEMBER', live, ARGV[1]) == 0 then return 2 end
+  return 1
+end
+if current ~= 'ACTIVE' then return 0 end
+
+-- Do not collect a registered process until it has published its first
+-- heartbeat. The state change and expiry check are atomic with refresh.
+if redis.call('SISMEMBER', live, ARGV[1]) == 0 then return 0 end
+redis.call('HSET', state, ARGV[1], 'DELETING')
+return 1
+)lua";
+
+const char* const kCleanupExpiredServerScript = R"lua(
+local live = KEYS[1]
+local state = KEYS[2]
+local heartbeat = KEYS[3]
+local serverJobs = KEYS[4]
+local typeJobs = KEYS[5]
+local serverSummary = KEYS[6]
+local typeSummary = KEYS[7]
+local serverId = ARGV[1]
+local count = tonumber(ARGV[2])
+local serverType = ARGV[3 + (count or 0)]
+
+if not count or count < 0 or count ~= math.floor(count) or
+   #KEYS ~= 7 + count or #ARGV ~= 3 + count then
+  return redis.error_reply('invalid cleanup arguments')
+end
+
+local function keytype(key)
+  return redis.call('TYPE', key).ok
+end
+local function valid(key, expected)
+  local t = keytype(key)
+  return t == 'none' or t == expected
+end
+
+if not valid(live, 'set') or keytype(state) ~= 'hash' or
+   not valid(heartbeat, 'string') or not valid(serverJobs, 'set') or
+   not valid(typeJobs, 'set') or not valid(serverSummary, 'hash') or
+   not valid(typeSummary, 'hash') then
+  return redis.error_reply('inconsistent cleanup key type')
+end
+if redis.call('HGET', state, serverId) ~= 'DELETING' or
+   redis.call('EXISTS', heartbeat) ~= 0 then
+  return 0
+end
+
+local refs = redis.call('SMEMBERS', serverJobs)
+if #refs ~= count then
+  return redis.error_reply('server job index changed during cleanup preflight')
+end
+local supplied = {}
+for i = 1, count do supplied[ARGV[2 + i]] = true end
+for _, ref in ipairs(refs) do
+  if not supplied[ref] then
+    return redis.error_reply('server job reference missing from cleanup arguments')
+  end
+end
+
+local pending, active, suspended, total = 0, 0, 0, 0
+local jobKeys = {}
+for i = 1, count do
+  local ref = ARGV[2 + i]
+  local jobKey = KEYS[7 + i]
+  if keytype(jobKey) ~= 'hash' then
+    return redis.error_reply('missing or wrong-type job hash')
+  end
+  local jobType = redis.call('HGET', jobKey, 'serverType')
+  local owner = redis.call('HGET', jobKey, 'serverId')
+  local status = redis.call('HGET', jobKey, 'status')
+  if owner ~= serverId or jobType ~= serverType then
+    return redis.error_reply('job ownership mismatch')
+  end
+  if redis.call('SISMEMBER', serverJobs, ref) ~= 1 or
+     redis.call('SISMEMBER', typeJobs, ref) ~= 1 then
+    return redis.error_reply('job index membership missing')
+  end
+  if status == 'PENDING' then pending = pending + 1
+  elseif status == 'ACTIVE' then active = active + 1
+  elseif status == 'SUSPENDED' then suspended = suspended + 1
+  else return redis.error_reply('unsupported job status') end
+  jobKeys[i] = jobKey
+  total = total + 1
+end
+
+local function enough(field, decrement)
+  if decrement == 0 then return true end
+  local raw = redis.call('HGET', typeSummary, field)
+  if not raw or not string.match(raw, '^%d+$') then return false end
+  local value = tonumber(raw)
+  return value and value >= decrement
+end
+if not enough('pending', pending) or not enough('active', active) or
+   not enough('suspended', suspended) or not enough('total', total) then
+  return redis.error_reply('invalid or insufficient type counters')
+end
+
+-- All validations precede the first write. Every key is in this type's slot.
+if pending > 0 then redis.call('HINCRBY', typeSummary, 'pending', -pending) end
+if active > 0 then redis.call('HINCRBY', typeSummary, 'active', -active) end
+if suspended > 0 then redis.call('HINCRBY', typeSummary, 'suspended', -suspended) end
+if total > 0 then redis.call('HINCRBY', typeSummary, 'total', -total) end
+for i = 1, count do
+  redis.call('SREM', typeJobs, ARGV[2 + i])
+  redis.call('DEL', jobKeys[i])
+end
+redis.call('DEL', serverJobs)
+redis.call('DEL', serverSummary, heartbeat)
+redis.call('SREM', live, serverId)
+-- Keep DELETING as a terminal tombstone; process IDs are never reused.
+return 1
+)lua";
