@@ -42,7 +42,8 @@ public:
 
 private:
   RedisHeartbeatManager(std::string serverType, std::string serverId);
-  void run();
+  void heartbeatLoop();
+  void cleanupLoop();
   void refreshOwnHeartbeat();
 
   std::shared_ptr<RedisClient> m_client;
@@ -52,7 +53,8 @@ private:
   std::mutex m_mutex;
   std::condition_variable m_wakeup;
   bool m_stopping = false;
-  std::thread m_thread;
+  std::thread m_heartbeatThread;
+  std::thread m_cleanupThread;
 };
 
 #endif // REDIS_HEARTBEAT_MANAGER_H
