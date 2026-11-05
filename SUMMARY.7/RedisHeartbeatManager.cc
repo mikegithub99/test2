@@ -1,6 +1,6 @@
 /**
  * @file RedisHeartbeatManager.cc
- * @brief Process-wide heartbeat refresh and cluster-safe expired-server cleanup.
+ * @brief Central cluster-safe expired-server cleanup coordinator.
  */
 
 #include "RedisHeartbeatManager.h"
@@ -47,14 +47,9 @@ std::unique_ptr<RedisHeartbeatManager>& processManager()
 }
 } // namespace
 
-RedisHeartbeatManager::RedisHeartbeatManager(string serverType, string serverId)
-    : m_client(RedisClient::Instance()),
-      m_serverType(std::move(serverType)),
-      m_serverId(std::move(serverId))
+RedisHeartbeatManager::RedisHeartbeatManager()
+    : m_client(RedisClient::Instance())
 {
-  if (m_serverType.empty() || m_serverId.empty())
-    throw std::invalid_argument("RedisHeartbeatManager: serverType and serverId are required");
-  m_heartbeatThread = std::thread(&RedisHeartbeatManager::heartbeatLoop, this);
   m_cleanupThread = std::thread(&RedisHeartbeatManager::cleanupLoop, this);
 }
 
@@ -63,17 +58,12 @@ RedisHeartbeatManager::~RedisHeartbeatManager()
   stop();
 }
 
-void RedisHeartbeatManager::Start(const string& serverType, const string& serverId)
+void RedisHeartbeatManager::Start()
 {
   std::lock_guard<std::mutex> lock(managerMutex());
   auto& manager = processManager();
-  if (manager)
-  {
-    if (manager->m_serverType != serverType || manager->m_serverId != serverId)
-      throw std::logic_error("RedisHeartbeatManager already started for a different process identity");
-    return;
-  }
-  manager.reset(new RedisHeartbeatManager(serverType, serverId));
+  if (manager) return;
+  manager.reset(new RedisHeartbeatManager());
 }
 
 void RedisHeartbeatManager::stop()
@@ -83,31 +73,7 @@ void RedisHeartbeatManager::stop()
     m_stopping = true;
   }
   m_wakeup.notify_all();
-  if (m_heartbeatThread.joinable()) m_heartbeatThread.join();
   if (m_cleanupThread.joinable()) m_cleanupThread.join();
-}
-
-void RedisHeartbeatManager::heartbeatLoop()
-{
-  std::unique_lock<std::mutex> lock(m_mutex);
-  while (!m_stopping)
-  {
-    lock.unlock();
-    try { refreshOwnHeartbeat(); }
-    catch (const std::exception& error)
-    {
-      std::cerr << "RedisHeartbeatManager: heartbeat refresh failed: "
-                << error.what() << '\\n';
-    }
-    catch (...)
-    {
-      std::cerr << "RedisHeartbeatManager: heartbeat refresh failed: unknown exception\\n";
-    }
-    lock.lock();
-    m_wakeup.wait_for(
-        lock, std::chrono::seconds(kHeartbeatIntervalSeconds),
-        [this] { return m_stopping; });
-  }
 }
 
 void RedisHeartbeatManager::cleanupLoop()
@@ -129,24 +95,6 @@ void RedisHeartbeatManager::cleanupLoop()
     lock.lock();
     m_wakeup.wait_for(lock, m_scanInterval, [this] { return m_stopping; });
   }
-}
-
-void RedisHeartbeatManager::refreshOwnHeartbeat()
-{
-  const vector<string> keys = {
-      heartbeatKey(m_serverType, m_serverId),
-      liveKey(m_serverType),
-      stateKey(m_serverType)};
-  const vector<string> args = {
-      m_serverId, std::to_string(kHeartbeatTtlSeconds)};
-  m_client->execute([&](auto& redis)
-  {
-    const auto result = redis.template eval<int64_t>(
-        kRefreshHeartbeatScript, keys.begin(), keys.end(),
-        args.begin(), args.end());
-    if (result != 1)
-      throw std::runtime_error("own heartbeat rejected: server is not ACTIVE");
-  });
 }
 
 void RedisHeartbeatManager::scanOnce()
