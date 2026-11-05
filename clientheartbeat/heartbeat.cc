@@ -2,10 +2,9 @@
  * @file heartbeat.cc
  * @brief Worker-process integration example for RedisJobStatus heartbeats.
  *
- * Each worker process registers its configured (serverType, serverId) and
- * keeps one RedisJobStatus instance alive for the lifetime of the process.
- * RedisJobStatus owns the periodic heartbeat publisher; do not create a
- * second heartbeat thread here.
+ * The worker registers once, then this client owns the heartbeat schedule.
+ * RedisJobStatus performs individual Redis operations and does not create
+ * threads or manage a heartbeat lifecycle.
  *
  * Application work runs on the application's own threads. This file has no
  * work-processing loop.
@@ -14,6 +13,7 @@
 #include "RedisJobStatus.h"
 
 #include <csignal>
+#include <iostream>
 #include <map>
 #include <string>
 #include <unistd.h>
@@ -28,8 +28,8 @@ void requestShutdown(int)
 }
 } // namespace
 
-// Initialize configuration and RedisClient settings before constructing
-// RedisJobStatus.
+// Initialize application configuration and RedisClient settings before
+// constructing RedisJobStatus. The host application supplies this function.
 void initializeConfiguration();
 
 int main()
@@ -39,21 +39,34 @@ int main()
 
   initializeConfiguration();
 
-  // Keep this object alive for the worker process lifetime. Its internal
-  // heartbeat thread starts when registration succeeds.
   RedisJobStatus status;
   status.registerServer(
       std::map<std::string, std::string>{}, // server-type metadata
       std::map<std::string, std::string>{}  // server-instance metadata
   );
 
-  // Work is handled by the application's other threads. pause() blocks
-  // without polling until a shutdown signal arrives.
+  // Publish immediately, then refresh every 10 seconds with a 30-second TTL.
+  // The short sleep intervals make shutdown responsive to SIGINT/SIGTERM.
   while (g_running)
   {
-    pause();
+    try
+    {
+      status.refreshHeartbeat(30);
+    }
+    catch (const std::exception& error)
+    {
+      std::cerr << "heartbeat: refresh failed: " << error.what() << '\n';
+    }
+    catch (...)
+    {
+      std::cerr << "heartbeat: refresh failed: unknown exception\n";
+    }
+
+    for (int second = 0; second < 10 && g_running; ++second)
+    {
+      sleep(1);
+    }
   }
 
-  // RedisJobStatus stops and joins its heartbeat thread during destruction.
   return 0;
 }
