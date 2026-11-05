@@ -47,7 +47,7 @@ int main()
     }
     catch (const std::exception& error)
     {
-      std::cerr << "heartbeat: refresh failed: " << error.what() << '\\n';
+      std::cerr << "heartbeat: refresh failed: " << error.what() << '\n';
     }
     catch (...)
     {
