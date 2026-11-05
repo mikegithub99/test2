@@ -297,10 +297,9 @@ local keyType = redis.call('TYPE', summaryKey).ok
 if keyType ~= 'none' and keyType ~= 'hash' then
   return redis.error_reply('wrong key type')
 end
-redis.call('HSETNX', summaryKey, 'meta:createdByServerId', ARGV[1])
-redis.call('HSETNX', summaryKey, 'meta:createdAt', ARGV[2])
-local count = tonumber(ARGV[3])
-local cursor = 4
+redis.call('HSETNX', summaryKey, 'meta:createdAt', ARGV[1])
+local count = tonumber(ARGV[2])
+local cursor = 3
 for i = 1, count do
   redis.call('HSET', summaryKey, 'meta:' .. ARGV[cursor], ARGV[cursor + 1])
   cursor = cursor + 2
