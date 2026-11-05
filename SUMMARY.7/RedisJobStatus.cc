@@ -94,6 +94,59 @@ string heartbeatKey(
 using KeyList = vector<string>;
 using ArgList = vector<string>;
 
+// Job hash fields owned by RedisJobStatus rather than caller metadata.
+constexpr const char* kJobIdField = "jobId";
+constexpr const char* kStatusField = "status";
+constexpr const char* kServerTypeField = "serverType";
+constexpr const char* kServerIdField = "serverId";
+constexpr const char* kReservedJobMetadataFields[] = {
+    kJobIdField, kStatusField, kServerTypeField, kServerIdField};
+
+// Type-summary metadata initialized once by the first registering server.
+constexpr const char* kCreatedByServerIdMetadataField = "createdByServerId";
+constexpr const char* kCreatedAtMetadataField = "createdAt";
+
+bool isReservedJobMetadataField(const string& field)
+{
+  for (const char* reserved : kReservedJobMetadataFields)
+  {
+    if (field == reserved)
+      return true;
+  }
+  return false;
+}
+
+bool isReservedServerTypeMetadataField(const string& field)
+{
+  return field == kCreatedByServerIdMetadataField ||
+         field == kCreatedAtMetadataField;
+}
+
+// Append a count followed by accepted field/value pairs. The predicate keeps
+// metadata policy at the call site while this helper owns the Lua wire format.
+template <typename IncludeField>
+void appendMetadataArgs(
+    ArgList& args,
+    const map<string, string>& metadata,
+    IncludeField includeField)
+{
+  const auto countIndex = args.size();
+  args.push_back("0");
+
+  size_t count = 0;
+  for (const auto& item : metadata)
+  {
+    if (!includeField(item.first))
+      continue;
+
+    args.push_back(item.first);
+    args.push_back(item.second);
+    ++count;
+  }
+
+  args[countIndex] = to_string(count);
+}
+
 template <typename Redis>
 int64_t evalResult(
     Redis& redis,
@@ -144,19 +197,19 @@ RedisJobStatus::Job readJob(Redis& redis, const string& key)
   RedisJobStatus::Job job;
   for (const auto& field : fields)
   {
-    if (field.first == "jobId")
+    if (field.first == kJobIdField)
     {
       job.jobId = field.second;
     }
-    else if (field.first == "status")
+    else if (field.first == kStatusField)
     {
       job.status = field.second;
     }
-    else if (field.first == "serverType")
+    else if (field.first == kServerTypeField)
     {
       job.serverType = field.second;
     }
-    else if (field.first == "serverId")
+    else if (field.first == kServerIdField)
     {
       job.serverId = field.second;
     }
@@ -232,17 +285,11 @@ RedisJobStatus::Result RedisJobStatus::createPendingJob(
       jobKey(m_serverType, m_serverId, jobId), typeJobsKey(m_serverType),
       serverJobsKey(m_serverType, m_serverId), typeSummaryKey(m_serverType),
       serverSummaryKey(m_serverType, m_serverId)};
-  ArgList args = {jobId, m_serverType, m_serverId, reference, "0"};
-  int jobFieldCount = 0;
-  for (const auto& field : metadata)
+  ArgList args = {jobId, m_serverType, m_serverId, reference};
+  appendMetadataArgs(args, metadata, [](const string& field)
   {
-    if (field.first == "jobId" || field.first == "status" ||
-        field.first == "serverType" || field.first == "serverId") continue;
-    args.push_back(field.first);
-    args.push_back(field.second);
-    ++jobFieldCount;
-  }
-  args[4] = std::to_string(jobFieldCount);
+    return !isReservedJobMetadataField(field);
+  });
   const auto result = m_client->execute([&](auto& redis)
   {
     return evalResult(redis, kCreatePendingScript, keys, args);
@@ -301,8 +348,7 @@ void RedisJobStatus::registerServer(
   validateIdentifier(m_serverId, "serverId");
   for (const auto& item : serverTypeMetadata)
   {
-    if (item.first.empty() || item.first == "createdByServerId" ||
-        item.first == "createdAt")
+    if (item.first.empty() || isReservedServerTypeMetadataField(item.first))
       throw invalid_argument("RedisJobStatus: empty or reserved server-type metadata field");
   }
   for (const auto& item : serverMetadata)
@@ -333,13 +379,9 @@ void RedisJobStatus::registerServer(
   std::ostringstream timestamp;
   timestamp << std::put_time(utc, "%Y-%m-%dT%H:%M:%SZ");
   const KeyList summaryKeys = {typeSummaryKey(m_serverType)};
-  ArgList summaryArgs = {m_serverId, timestamp.str(),
-                         std::to_string(serverTypeMetadata.size())};
-  for (const auto& item : serverTypeMetadata)
-  {
-    summaryArgs.push_back(item.first);
-    summaryArgs.push_back(item.second);
-  }
+  ArgList summaryArgs = {m_serverId, timestamp.str()};
+  appendMetadataArgs(summaryArgs, serverTypeMetadata,
+                     [](const string&) { return true; });
   m_client->execute(
       [&](auto& redis)
       {
@@ -348,12 +390,9 @@ void RedisJobStatus::registerServer(
       });
 
   const KeyList serverKeys = {serverSummaryKey(m_serverType, m_serverId)};
-  ArgList serverArgs = {std::to_string(serverMetadata.size())};
-  for (const auto& item : serverMetadata)
-  {
-    serverArgs.push_back(item.first);
-    serverArgs.push_back(item.second);
-  }
+  ArgList serverArgs;
+  appendMetadataArgs(serverArgs, serverMetadata,
+                     [](const string&) { return true; });
   m_client->execute(
       [&](auto& redis)
       {
