@@ -38,7 +38,8 @@ if lt ~= 'none' and lt ~= 'set' then
   return redis.error_reply('wrong live-set key type')
 end
 if st == 'none' then
-  if ht == 'none' and jt == 'none' and mt == 'none' then return 2 end
+  if ht == 'none' and jt == 'none' and mt == 'none' and
+     not redis.call('SISMEMBER', live, ARGV[1]) then return 2 end
   return redis.error_reply('missing lifecycle state with remaining server artifacts')
 end
 if st ~= 'hash' or (jt ~= 'none' and jt ~= 'set') or
@@ -48,7 +49,8 @@ end
 if redis.call('EXISTS', heartbeat) ~= 0 then return 0 end
 local current = redis.call('HGET', state, ARGV[1])
 if current == 'DELETING' then
-  if jt == 'none' and mt == 'none' then return 2 end
+  if jt == 'none' and mt == 'none' and
+     not redis.call('SISMEMBER', live, ARGV[1]) then return 2 end
   return 1
 end
 if current ~= 'ACTIVE' then return 0 end
