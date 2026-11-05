@@ -54,7 +54,8 @@ RedisHeartbeatManager::RedisHeartbeatManager(string serverType, string serverId)
 {
   if (m_serverType.empty() || m_serverId.empty())
     throw std::invalid_argument("RedisHeartbeatManager: serverType and serverId are required");
-  m_thread = std::thread(&RedisHeartbeatManager::run, this);
+  m_heartbeatThread = std::thread(&RedisHeartbeatManager::heartbeatLoop, this);
+  m_cleanupThread = std::thread(&RedisHeartbeatManager::cleanupLoop, this);
 }
 
 RedisHeartbeatManager::~RedisHeartbeatManager()
@@ -82,47 +83,49 @@ void RedisHeartbeatManager::stop()
     m_stopping = true;
   }
   m_wakeup.notify_all();
-  if (m_thread.joinable()) m_thread.join();
+  if (m_heartbeatThread.joinable()) m_heartbeatThread.join();
+  if (m_cleanupThread.joinable()) m_cleanupThread.join();
 }
 
-void RedisHeartbeatManager::run()
+void RedisHeartbeatManager::heartbeatLoop()
 {
-  auto nextRefresh = std::chrono::steady_clock::now();
   std::unique_lock<std::mutex> lock(m_mutex);
   while (!m_stopping)
   {
     lock.unlock();
-    const auto now = std::chrono::steady_clock::now();
-    if (now >= nextRefresh)
+    try { refreshOwnHeartbeat(); }
+    catch (const std::exception& error)
     {
-      try
-      {
-        refreshOwnHeartbeat();
-      }
-      catch (const std::exception& error)
-      {
-        std::cerr << "RedisHeartbeatManager: heartbeat refresh failed: "
-                  << error.what() << '\n';
-      }
-      catch (...)
-      {
-        std::cerr << "RedisHeartbeatManager: heartbeat refresh failed: unknown exception\n";
-      }
-      nextRefresh = std::chrono::steady_clock::now() +
-                    std::chrono::seconds(kHeartbeatIntervalSeconds);
+      std::cerr << "RedisHeartbeatManager: heartbeat refresh failed: "
+                << error.what() << '\\n';
     }
+    catch (...)
+    {
+      std::cerr << "RedisHeartbeatManager: heartbeat refresh failed: unknown exception\\n";
+    }
+    lock.lock();
+    m_wakeup.wait_for(
+        lock, std::chrono::seconds(kHeartbeatIntervalSeconds),
+        [this] { return m_stopping; });
+  }
+}
 
+void RedisHeartbeatManager::cleanupLoop()
+{
+  std::unique_lock<std::mutex> lock(m_mutex);
+  while (!m_stopping)
+  {
+    lock.unlock();
     try { scanOnce(); }
     catch (const std::exception& error)
     {
       std::cerr << "RedisHeartbeatManager: cleanup scan failed: "
-                << error.what() << '\n';
+                << error.what() << '\\n';
     }
     catch (...)
     {
-      std::cerr << "RedisHeartbeatManager: cleanup scan failed: unknown exception\n";
+      std::cerr << "RedisHeartbeatManager: cleanup scan failed: unknown exception\\n";
     }
-
     lock.lock();
     m_wakeup.wait_for(lock, m_scanInterval, [this] { return m_stopping; });
   }
