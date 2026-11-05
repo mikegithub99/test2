@@ -25,12 +25,17 @@ local heartbeat = KEYS[1]
 local state = KEYS[2]
 local serverJobs = KEYS[3]
 local serverSummary = KEYS[4]
+local live = KEYS[5]
 local ht = redis.call('TYPE', heartbeat).ok
 local st = redis.call('TYPE', state).ok
 local jt = redis.call('TYPE', serverJobs).ok
 local mt = redis.call('TYPE', serverSummary).ok
+local lt = redis.call('TYPE', live).ok
 if ht ~= 'none' and ht ~= 'string' then
   return redis.error_reply('wrong heartbeat key type')
+end
+if lt ~= 'none' and lt ~= 'set' then
+  return redis.error_reply('wrong live-set key type')
 end
 if st == 'none' then
   if ht == 'none' and jt == 'none' and mt == 'none' then return 2 end
@@ -47,6 +52,9 @@ if current == 'DELETING' then
   return 1
 end
 if current ~= 'ACTIVE' then return 0 end
+-- A freshly registered process is not a cleanup candidate until its first
+-- successful heartbeat has published live-set membership.
+if not redis.call('SISMEMBER', live, ARGV[1]) then return 0 end
 redis.call('HSET', state, ARGV[1], 'DELETING')
 return 1
 )lua";
@@ -203,7 +211,7 @@ void HeartbeatManager::scanOnce()
         if (redis.exists(heartbeat)) continue;
 
         const vector<string> fenceKeys = {
-            heartbeat, state, serverJobsKey(type, id), serverSummaryKey(type, id)};
+            heartbeat, state, serverJobsKey(type, id), serverSummaryKey(type, id), liveKey(type)};
         const vector<string> fenceArgs = {id};
         const auto fenced = redis.template eval<int64_t>(
             kFenceScript, fenceKeys.begin(), fenceKeys.end(),
