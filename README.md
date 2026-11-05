@@ -222,9 +222,9 @@ No build, unit test, Redis integration test, or Redis Cluster test has yet been 
 
 ## Heartbeat cleanup manager
 
-`HeartbeatManager.h/.cc` implements the process-wide background cleanup worker
+`RedisHeartbeatManager.h/.cc` implements the process-wide background cleanup worker
 described in `HEARTBEAT_DESIGN.md`. It is started automatically, once per
-process, when the first enabled `RedisJobStatus` object is constructed. The host
+process, after `registerServer()` has completed successfully. The host
 configuration registry and Redis client settings must be initialized first.
 The manager refreshes the current process heartbeat and scans registered IDs; its per-type fence only considers an
 `ACTIVE` ID after its first heartbeat has published live-set membership. It
