@@ -28,9 +28,7 @@
  * KEYS[1..5] are assigned to jobKey, typeJobsKey, serverJobsKey,
  * typeSummaryKey, and serverSummaryKey, respectively.
  * ARGV[1..4] are jobId, serverType, serverId, and composite reference.
- * ARGV[5..8] are job-field count, type-metadata count, server-metadata count,
- * and UTC creation timestamp. Remaining arguments are field/value pairs in that order.
- * Summary metadata uses meta:<field> hash fields.
+ * ARGV[5] is job-field count. Remaining arguments are job field/value pairs.
  *
  * Returns RESULT_OK (0), RESULT_ALREADY_EXISTS (5), or
  * RESULT_DATA_INCONSISTENT (4).
@@ -69,13 +67,9 @@ local serverType = ARGV[2]
 local serverId = ARGV[3]
 local reference = ARGV[4]
 local jobFieldCount = tonumber(ARGV[5])
-local typeMetadataCount = tonumber(ARGV[6])
-local serverMetadataCount = tonumber(ARGV[7])
-local createdAt = ARGV[8]
-local typeSummaryWasMissing = redis.call('EXISTS', typeSummaryKey) == 0
 local fields = {'jobId', jobId, 'status', 'PENDING',
                 'serverType', serverType, 'serverId', serverId}
-local cursor = 9
+local cursor = 6
 for i = 1, jobFieldCount do
   table.insert(fields, ARGV[cursor])
   table.insert(fields, ARGV[cursor + 1])
@@ -90,21 +84,6 @@ redis.call('HINCRBY', typeSummaryKey, 'total', 1)
 redis.call('HINCRBY', serverSummaryKey, 'pending', 1)
 redis.call('HINCRBY', serverSummaryKey, 'total', 1)
 
--- Merge supplied metadata while preserving fields not present in this call.
-for i = 1, typeMetadataCount do
-  redis.call('HSET', typeSummaryKey, 'meta:' .. ARGV[cursor], ARGV[cursor + 1])
-  cursor = cursor + 2
-end
--- Server-ID metadata is written when its summary is created; no merge is needed.
-for i = 1, serverMetadataCount do
-  redis.call('HSET', serverSummaryKey, 'meta:' .. ARGV[cursor], ARGV[cursor + 1])
-  cursor = cursor + 2
-end
-if typeSummaryWasMissing then
-  redis.call('HSET', typeSummaryKey,
-    'meta:createdByServerId', serverId,
-    'meta:createdAt', createdAt)
-end
 return RESULT_OK
 )lua";
 
@@ -285,9 +264,8 @@ return RESULT_OK
 /**
  * @brief Initializes server-type metadata without overwriting existing values.
  *
- * KEYS[1] is the type summary hash. ARGV[1] is the registering server ID
- * and ARGV[2] is the UTC creation timestamp. This script touches only the
- * summary key so it remains valid in Redis Cluster.
+ * KEYS[1] is the type summary hash. ARGV[1..3] are registering server ID,
+ * UTC creation timestamp, and metadata pair count. Remaining args are pairs.
  */
 const char* const kInitializeTypeSummaryMetadataScript = R"lua(
 local summaryKey = KEYS[1]
@@ -297,6 +275,33 @@ if keyType ~= 'none' and keyType ~= 'hash' then
 end
 redis.call('HSETNX', summaryKey, 'meta:createdByServerId', ARGV[1])
 redis.call('HSETNX', summaryKey, 'meta:createdAt', ARGV[2])
+local count = tonumber(ARGV[3])
+local cursor = 4
+for i = 1, count do
+  redis.call('HSET', summaryKey, 'meta:' .. ARGV[cursor], ARGV[cursor + 1])
+  cursor = cursor + 2
+end
+return 1
+)lua";
+
+ /**
+  * @brief Merges metadata into one server-ID summary hash.
+  *
+  * KEYS[1] is the server summary hash. ARGV[1] is metadata pair count;
+  * remaining arguments are field/value pairs.
+  */
+const char* const kSetServerSummaryMetadataScript = R"lua(
+local summaryKey = KEYS[1]
+local keyType = redis.call('TYPE', summaryKey).ok
+if keyType ~= 'none' and keyType ~= 'hash' then
+  return redis.error_reply('wrong key type')
+end
+local count = tonumber(ARGV[1])
+local cursor = 2
+for i = 1, count do
+  redis.call('HSET', summaryKey, 'meta:' .. ARGV[cursor], ARGV[cursor + 1])
+  cursor = cursor + 2
+end
 return 1
 )lua";
 
