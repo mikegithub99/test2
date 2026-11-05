@@ -42,7 +42,8 @@ public:
     InvalidTransition = 3,
     InconsistentData = 4,
     JobAlreadyExists = 5,
-    Disabled = 6
+    Disabled = 6,
+    ServerNotActive = 7
   };
 
   enum class State
