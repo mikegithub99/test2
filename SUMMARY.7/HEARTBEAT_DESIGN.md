@@ -99,7 +99,7 @@ Expiry is permanent for that process ID. A process that resumes after fencing ha
 
 ## Implementation impact and status
 
-Implementation requires an atomic heartbeat refresh script, fencing script, `ACTIVE` checks in every lifecycle Lua script, a Phase A cleanup script in `RedisJobScripts.inc`, a registry-slot Phase B operation, and a background `HeartbeatManager` with retries and error reporting.
+Implementation requires an atomic heartbeat refresh script, fencing script, `ACTIVE` checks in every lifecycle Lua script, the Phase A cleanup script in `HeartbeatManager.cc`, a registry-slot Phase B operation, and a background `HeartbeatManager` with retries and error reporting.
 
 Tests should cover multiple jobs in each state, zero-job servers, wrong-type keys, missing jobs, ownership mismatch, counter underflow, retry/idempotency, lifecycle calls racing with fencing, heartbeat renewal racing with fencing, rejection after fencing, and Redis Cluster slot separation.
 
