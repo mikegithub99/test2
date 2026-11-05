@@ -1,116 +1,164 @@
-# Redis Job Status API (.7)
+# Redis Job Status API
 
-## Optional RedisJobStatus configuration
+This directory contains the C++17 Redis-backed job lifecycle and worker-status implementation. The feature uses Redis hashes and sets for job records, indexes, counters, metadata, and heartbeats. Lua scripts perform the multi-key lifecycle updates atomically on the Redis node that owns the keys.
 
-Set the host registry value `redisJobStatusEnabled` to `true` or `false` (also accepts `1/0` and `yes/no`, case-insensitively). An unset or empty value defaults to `true` for compatibility with existing deployments.
+## Configuration and object lifetime
 
-When enabled, `RedisJobStatus` obtains the configured `RedisClient` and runs the normal Redis operations. When disabled, it does not initialize or access `RedisClient`: result-returning mutators return `RedisJobStatus::Result::Disabled`, void mutators do nothing, and read methods return empty collections. This makes status reporting optional without requiring Redis configuration or a reachable Redis server when the feature is off.
+The default `RedisJobStatus` constructor reads these host-application registry values through `get_reg_val(const std::string&)`:
 
-The enablement setting and worker identity are read when the `RedisJobStatus` object is constructed. By default, the host registry supplies `redisJobStatusEnabled`, `redisJobStatusServerType`, and `redisJobStatusServerId`. `registerServer(serverTypeMetadata, serverMetadata)` registers that configured identity and its metadata. Tests/examples can inject a provider:
+| Registry key | Purpose |
+|---|---|
+| `redisJobStatusEnabled` | Enables or disables status reporting |
+| `redisJobStatusServerType` | Worker/server type used in Redis keys and job ownership |
+| `redisJobStatusServerId` | Stable identity of this worker/server instance |
+
+`redisJobStatusEnabled` accepts `true`/`false`, `1`/`0`, and `yes`/`no`, case-insensitively. An empty or unset value defaults to enabled. Configuration is read when each `RedisJobStatus` object is constructed; the object retains its configured server identity.
+
+Separate `RedisJobStatus` objects may be used at different call sites, provided they are constructed with the same configured `serverType` and `serverId`. Call `registerServer()` to register that configured identity; it does not set or distribute identity to other objects.
+
+When disabled, the class does not initialize or access `RedisClient`. Result-returning mutators return `RedisJobStatus::Result::Disabled`, void mutators do nothing, and read methods return empty collections.
+
+Tests can inject a configuration provider:
 
 ```cpp
-RedisJobStatus status([]
-{
-  return RedisJobStatus::Config{false};
+RedisJobStatus status([] {
+  RedisJobStatus::Config config;
+  config.enabled = false;
+  return config;
 });
 ```
 
-## RedisClient configuration injection
+When enabled, `RedisJobStatus` obtains the shared `RedisClient`. The client accepts an optional configuration provider on the first `RedisClient::Instance()` call. Its default provider reads `redisUrl` and `isRedisCluster` from the host registry. The first call initializes the singleton; later providers are ignored.
 
-Pass an optional provider to `RedisClient::Instance()` on its first call. This keeps `RedisClient` small: it accepts a callable returning `RedisClient::Config`, while the default provider calls the host application's `get_reg_val("redisUrl")` and `get_reg_val("isRedisCluster")`.
-
-Production usage:
+## Public API
 
 ```cpp
-// Initialize the application registry first, including redisJobStatusEnabled.
-// Set redisJobStatusEnabled=false to disable status reporting without Redis.
-RedisJobStatus status; // reads enablement and worker identity from host configuration
+RedisJobStatus status;
 
-auto client = RedisClient::Instance(); // optional direct access
+status.registerServer(typeMetadata, serverMetadata);
+status.refreshHeartbeat(30);
+
+status.createPendingJob("job-100", jobMetadata);
+status.transitionJob("job-100", RedisJobStatus::State::Active);
+status.transitionJob("job-100", RedisJobStatus::State::Suspended);
+status.transitionJob("job-100", RedisJobStatus::State::Active);
+status.completeJob("job-100");
+
+auto types = status.getServerTypes();
+auto typeCounters = status.getTypeSummary("query");
+auto servers = status.getServerSummaries("query");
+auto jobs = status.getServerJobs("query", "query-01");
 ```
 
-Tests and examples can pass a provider returning deterministic mock values. The first `Instance()` call initializes the singleton; providers passed on later calls are ignored. The default provider accepts `true`/`false`, `1`/`0`, or `yes`/`no` for `isRedisCluster`.
+The configured identity is used by registration, job lifecycle operations, and heartbeats. The read APIs accept the server type and, where needed, server ID explicitly.
 
-## Files
+Supported job transitions are:
 
-- `RedisClient.h/.cc`: client selection and injectable configuration.
-- `RedisJobStatus.h/.cc`: optional job lifecycle and dashboard APIs; controlled by `redisJobStatusEnabled`.
-- `RedisJobScripts.inc`: Lua scripts stored as C++ raw string literals and included by `RedisJobStatus.cc` to keep the main implementation readable without a generator or runtime script files.
-- `examples/RedisWorkerExample.cc`: worker registration and heartbeat.
-- `examples/RedisStatusCli.cc`: interactive type → instance → jobs drill-down.
-- `examples/RedisWorkerLifecycleExample.cc`: end-to-end demonstration of every public RedisJobStatus API.
+- `PENDING → ACTIVE`
+- `ACTIVE → SUSPENDED`
+- `SUSPENDED → ACTIVE`
 
-## Lifecycle example
+Repeating the current state returns `NoOp`. A transition to `PENDING` is not supported. `completeJob()` removes the job and decrements its state and total counters.
 
-Run with `--statusEnabled=false` to demonstrate the disabled path without connecting to Redis. The default is enabled.
+The C++ result values are part of the Lua/C++ interface and must remain aligned:
 
-```sh
-./RedisWorkerLifecycleExample --redisUrl=redis://127.0.0.1:6379 --cluster=false
-./RedisWorkerLifecycleExample --statusEnabled=false
-```
+| Result | Numeric value |
+|---|---:|
+| `Success` | 0 |
+| `NoOp` | 1 |
+| `JobNotFound` | 2 |
+| `InvalidTransition` | 3 |
+| `InconsistentData` | 4 |
+| `JobAlreadyExists` | 5 |
+| `Disabled` | 6 |
 
-When enabled, the example injects mock values for `redisUrl` and `isRedisCluster` and calls `registerServer`, `refreshHeartbeat`, `createPendingJob`, `getServerTypes`, `getTypeSummary`, `getServerSummaries`, `getServerJobs`, all valid `transitionJob` transitions, and `completeJob`. With `--statusEnabled=false`, it skips Redis client initialization, shows the `Disabled` result, and verifies that reads are empty and void operations are no-ops. The enabled path uses a deterministic demo job ID, so rerunning against the same Redis data may report `JobAlreadyExists`; use a fresh server type or remove the prior demo record.
+## Metadata behavior and reserved fields
 
-## Redis data structures
+Metadata values are stored as strings in Redis hashes.
 
-| Type | Key pattern | Purpose | Sample data held |
-|---|---|---|---|
-| SET | `servers:{registry}:types` | Global server-type discovery. | `query`, `order` |
-| SET | `servers:{registry}:type:serverType` | Registered instance IDs for one type. | For `query`: `query-01`, `query-02` |
-| HASH | `summary:type:{serverType}` | Type-level status counters and metadata. | Counters plus `meta:createdByServerId`, `meta:createdAt`, and custom `meta:<field>` values |
-| HASH | `summary:server:{serverType}:serverId` | Per-instance counters and metadata. | Counters plus custom `meta:<field>` values for the server ID |
-| HASH | `job:{serverType}:<serverId-length>:<serverId>:<jobId>` | Job state, ownership and metadata. | `jobId=job-100`, `status=ACTIVE`, `serverType=query`, `serverId=query-01`, plus custom fields |
-| SET | `jobs:type:{serverType}` | Composite references for current jobs of a type. | `7:query-01:job-100`, `7:query-01:job-101`, `7:query-02:job-100` |
-| SET | `jobs:server:{serverType}:serverId` | Composite references for jobs owned by an instance. | For `query-01`: `7:query-01:job-100`, `7:query-01:job-102` |
-| String + TTL | `heartbeat:server:{serverType}:serverId` | Heartbeat health signal. | `query-01` with a 30-second TTL |
+- Job metadata is supplied to `createPendingJob(jobId, metadata)` and stored on the job hash.
+- Server-type metadata is supplied as the first argument to `registerServer()` and merged into the type summary.
+- Server-instance metadata is supplied as the second argument to `registerServer()` and merged into that instance's summary.
+- A metadata update replaces supplied matching fields and leaves unspecified metadata fields unchanged.
 
-## Redis Cluster hash-tag scheme: why and how
+All summary metadata hash fields are prefixed with `meta:`. Counter-reading APIs omit fields with this prefix, so descriptive metadata is not parsed as numeric counters.
 
-Redis Cluster assigns each key to a hash slot. Normally the slot is calculated from the key name, but when a key contains a non-empty substring inside the first matching pair of curly braces, Redis hashes that substring instead. This substring is called the **hash tag**. Keys with the same tag are placed in the same slot, which is required for a Lua script or multi-key command to operate on them together in Redis Cluster.
+### Job metadata reserved fields
 
-### Job lifecycle keys use the server type
+These job hash fields are owned by `RedisJobStatus`:
 
-Job-related keys use `{serverType}` as their hash tag. For example, `job:{query}:job-100`, `jobs:type:{query}`, `jobs:server:{query}:query-01`, `summary:type:{query}`, and `summary:server:{query}:query-01` all hash using `query`. This co-locates the job record, its indexes and its counters so the create, transition and completion scripts can update those related keys together. Different server types, such as `query` and `order`, can be distributed across different slots.
+- `jobId`
+- `status`
+- `serverType`
+- `serverId`
 
-### Server discovery uses a shared registry tag
+Caller metadata entries using these names are ignored when constructing the Lua job-creation arguments; the API writes the authoritative values itself. Metadata field names must not be empty.
 
-Server registration needs to update two keys: the global type set `servers:{registry}:types` and a type-specific set such as `servers:{registry}:type:query`. Both use the exact literal tag `{registry}`, so they occupy the same Redis Cluster slot. `registerServer()` passes both keys explicitly to one Lua script, which checks that both are either absent or sets before adding the type and server ID. This avoids the previous two-operation gap, where one registry could be updated while the other failed, and avoids a Cluster cross-slot error.
+The reserved job-field names are centralized in `RedisJobStatus.cc` and checked through one predicate. To reserve another job field from caller-supplied metadata, add its name to `kReservedJobMetadataFields`. If the field also becomes an API-owned value in the job hash, update the job creation script and the job-reading logic consistently.
 
-The registry tag is intentionally different from the `{serverType}` tag: a single global type-discovery set cannot share a slot with every type-partitioned job key. The trade-off is that all server-registry keys share one slot, which could become a hotspot if registration traffic is very high. Job lifecycle data remains partitioned by server type. Lua scripts execute without interleaving from other Redis commands, but they are not general rollback transactions, so the script validates both key types before performing writes.
+### Server-type metadata reserved fields
 
-When adding keys to a script, pass them in the explicit `KEYS` list and ensure every key belongs to the same hash slot. Do not assume that merely having braces somewhere in each key is enough: the text inside the braces must match exactly.
+The following system metadata fields are initialized on first creation of a type summary:
 
-## Lua scripts: keys, arguments and tables
+- `meta:createdByServerId` — server ID that first caused the type summary to be initialized.
+- `meta:createdAt` — UTC timestamp in ISO-8601 form.
 
-The Lua scripts are kept in `RedisJobScripts.inc` as C++ raw string literals. This keeps them together and out of the main implementation file, while avoiding a generator and runtime file-path dependencies. Edit the script text in that include file; it is not a standalone `.lua` file.
+These values are set with `HSETNX`, so later registrations do not overwrite them. Caller-supplied server-type metadata named `createdByServerId` or `createdAt` is rejected. These reserved names are centralized in `RedisJobStatus.cc` as well.
 
+Server-instance metadata currently has no additional reserved field names beyond the requirement that field names are non-empty.
 
-redis-plus-plus `eval` passes the Lua script, a key range and an argument range. `KEYS[1]`/ `KEYS[2]` are supplied Redis keys; `ARGV[1]`/ `ARGV[2]` are non-key arguments. Lua tables are one-indexed arrays. For example, `local fields = {'status', 'PENDING'}` and `redis.call('HSET', KEYS[1], unpack(fields))` expands the table into the arguments to `HSET`. Other calls include `SADD` for set membership, `HGET` for a field read, and `HINCRBY` for counters. Keep scripts short: they execute atomically on the serving node but block other commands while running.
+## Redis key layout
+
+| Redis type | Key pattern | Purpose |
+|---|---|---|
+| SET | `servers:{registry}:types` | Global server-type discovery |
+| SET | `servers:{registry}:type:<serverType>` | Registered server IDs for one type |
+| HASH | `summary:type:{<serverType>}` | Type counters and type metadata |
+| HASH | `summary:server:{<serverType>}:<serverId>` | Server counters and server metadata |
+| HASH | `job:{<serverType>}:<serverId-length>:<serverId>:<jobId>` | Job state, ownership, and custom fields |
+| SET | `jobs:type:{<serverType>}` | Composite references for current jobs of a type |
+| SET | `jobs:server:{<serverType>}:<serverId>` | Composite references for current jobs owned by a server |
+| STRING with TTL | `heartbeat:server:{<serverType>}:<serverId>` | Last heartbeat value for a server |
+
+The job key and both job indexes use a length-prefixed composite reference derived from the configured server ID and original application job ID. This avoids ambiguity if a server ID contains separator characters. The job hash's `jobId` field retains the original application job ID for display.
+
+## Redis Cluster hash-tag design
+
+Redis Cluster uses the text inside the first non-empty pair of braces as a hash tag. Keys used together by a multi-key Lua script must resolve to the same hash slot.
+
+Job lifecycle keys use `{serverType}` as their hash tag. The job hash, type and server job indexes, and type and server summaries for a given server type therefore share a slot. Different server types can be distributed across different slots.
+
+Server registration updates two registry sets in one Lua script:
+
+- `servers:{registry}:types`
+- `servers:{registry}:type:<serverType>`
+
+Both use the literal `{registry}` hash tag. The registry keys intentionally use a different slot from the type-partitioned lifecycle data. Type-summary metadata initialization and server-summary metadata updates are separate operations because those summary keys use the `{serverType}` hash tag rather than `{registry}`.
+
+When extending a Lua script, pass every accessed Redis key explicitly through `KEYS` and preserve the same-slot requirement. Lua scripts execute without interleaving from other Redis commands, but they are not general rollback transactions; validate key types and state before writing.
+
+## Lua argument conventions
+
+The scripts are embedded as C++ raw string literals in `RedisJobScripts.inc`, which is included by `RedisJobStatus.cc`. It is not a standalone Lua file.
+
+The C++ implementation uses `appendMetadataArgs()` to append a metadata pair count followed by the accepted field/value pairs. This keeps the C++ argument encoding consistent across job metadata, server-type metadata, and server-instance metadata. The include/exclude policy is kept separate from the argument-formatting helper.
+
+For job creation, the five keys are the job hash, type job index, server job index, type summary, and server summary. `ARGV[1..4]` contain the original job ID, server type, server ID, and composite reference. `ARGV[5]` is the number of accepted job metadata pairs; pairs begin at `ARGV[6]`.
+
+The type-summary metadata initialization script receives the registering server ID, creation timestamp, metadata pair count, then the metadata pairs. The server-summary metadata script receives the metadata pair count followed by its pairs. Keep these layouts synchronized with the corresponding C++ argument construction whenever either side changes.
+
+## Source files
+
+- `RedisClient.h/.cc` — Redis client configuration and singleton wrapper (if present in this directory).
+- `RedisJobStatus.h/.cc` — public API and C++ implementation.
+- `RedisJobScripts.inc` — embedded Lua scripts used by the implementation.
+- `heartbeat.cc` — example heartbeat runner that refreshes immediately and then periodically on a worker thread.
+- `examples/` — example programs, where included.
+- `redis_job_correctness.py` — Redis data correctness checker, where included.
+- `redis_browser.py` — interactive Redis browser, where included.
 
 ## Build and validation
 
-Requires C++17, redis-plus-plus and hiredis. The host application must provide `std::string get_reg_val(const std::string&)` and initialize its configuration registry before the first `RedisClient::Instance()` call. Build flags depend on your installation. These sources have not been compiled or integration-tested as part of this repository update; test against the exact client version and both standalone and cluster deployments before production.
+The implementation requires C++17, redis-plus-plus, hiredis, and a host-provided `get_reg_val(const std::string&)` implementation. Initialize the host configuration registry before constructing `RedisJobStatus` or making the first `RedisClient::Instance()` call. Exact compiler and linker flags depend on the host application's Redis client installation.
 
-
-## Fixed server identity and duplicate application IDs
-
-The worker identity is read at construction from the host registry values `redisJobStatusServerType` and `redisJobStatusServerId`, alongside `redisJobStatusEnabled`. The object retains that identity for `registerServer(serverTypeMetadata, serverMetadata)`, `createPendingJob(jobId, metadata)`, `transitionJob(jobId, state)`, `completeJob(jobId)`, and `refreshHeartbeat(ttlSeconds)`. This allows separate call sites to use separate `RedisJobStatus` instances, provided each instance is constructed with the same configured identity.
-
-Server-type metadata is merged into the type summary hash during registration: supplied fields replace matching fields and unspecified fields are preserved. Server-ID metadata is merged into that server's summary during registration. Metadata fields use the `meta:<name>` prefix. Server-type metadata names `createdByServerId` and `createdAt` are reserved. When a type summary hash is first created, the script stores the registering server ID as `meta:createdByServerId` and an ISO-8601 UTC timestamp as `meta:createdAt`. These system fields are never overwritten by later registrations.
-
-Example:
-
-```cpp
-std::map<std::string, std::string> typeMetadata = {
-    {"environment", "production"}, {"owner", "search"}
-};
-std::map<std::string, std::string> serverMetadata = {
-    {"host", "worker-17"}, {"zone", "west"}
-};
-status.registerServer(typeMetadata, serverMetadata);
-status.createPendingJob("job-100");
-```
-
-In the browser, press `i` on a server-type or server-ID row to view its metadata. Press Enter to dismiss the popup.
-
-The storage key uses a length-prefixed composite reference derived from the configured `serverId` and the original `jobId`. Both indexes store that composite reference. The hash field `jobId` remains the original application-generated value, so UI display is unchanged. All related keys retain the `{serverType}` hash tag.
+No build, unit test, Redis integration test, or Redis Cluster test was run as part of the metadata-helper refactor. Validate against the project's actual build and test setup, including standalone Redis and Redis Cluster, before deploying.
