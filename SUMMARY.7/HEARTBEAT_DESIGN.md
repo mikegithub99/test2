@@ -16,7 +16,7 @@ registerServer(serverTypeMetadata, serverMetadata);
 
 Do not add a UUID/incarnation argument, change lifecycle API signatures, or duplicate `serverId` in metadata or type-summary metadata. Heartbeat value is the configured `serverId`.
 
-`RedisJobStatus` retains its existing configured identity and Redis client; it does not generate a second UUID or own the cleanup thread. A single process-wide `RedisHeartbeatManager` owns independent heartbeat-refresh and expired-server cleanup loops. Each distributed process runs its own manager; do not run a second heartbeat runner in the same process.
+`RedisJobStatus` retains its existing configured identity and Redis client; it does not generate a second UUID or own the cleanup thread. Each server process owns its heartbeat publisher. A single central `RedisHeartbeatManager` process owns the cleanup loop. Each distributed process runs its own manager; do not run a second heartbeat runner in the same process.
 
 ## Existing key layout
 
