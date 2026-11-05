@@ -72,6 +72,7 @@ The C++ result values are part of the Lua/C++ interface and must remain aligned:
 | `JobAlreadyExists` | 5 |
 | `Disabled` | 6 |
 | `ServerNotActive` | 7 |
+| `ServerNotActive` | 7 |
 
 ## Metadata behavior and reserved fields
 
