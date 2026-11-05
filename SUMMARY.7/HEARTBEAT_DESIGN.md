@@ -2,7 +2,16 @@
 
 ## Purpose and required behavior
 
-A server instance is considered failed when its heartbeat key expires. Failure is not merely a dashboard liveness change: it triggers removal of **all Redis artifacts owned by that `serverType/serverId`**.
+A server instance is considered failed when its heartbeat key expires. Failure triggers cleanup scoped strictly to that one `(serverType, serverId)` instance. It must not remove artifacts belonging to other server IDs of the same server type.
+
+### Strict cleanup scope
+
+The cleanup target is one server ID only. The server-type keys are shared aggregates and must remain in place:
+
+- Delete only this server ID's job hashes, server job index, server summary, heartbeat, live-set membership, and matching registration entry.
+- In the shared type job index, remove only the references for jobs owned by this server ID. Do not delete the type job index itself.
+- In the shared type summary, decrement only the counters contributed by this server's deleted jobs. Do not delete the type summary, reset its counters, or remove its metadata.
+- Do not remove the server type from global type discovery, and do not touch any other server ID's jobs, indexes, summary, heartbeat, live membership, or registration.
 
 Cleanup must:
 
@@ -83,9 +92,9 @@ If the heartbeat is absent and the incarnation matches, the script must prefligh
 
 Only after all checks pass, perform the cleanup atomically:
 
-- For each job, remove its reference from `jobs:type:{<serverType>}` and delete its job hash.
+- For each job owned by this server ID, remove only that job's reference from the shared `jobs:type:{<serverType>}` set and delete only that job hash. Leave references belonging to other server IDs untouched.
 - Delete `jobs:server:{<serverType>}:<serverId>`.
-- Decrement `pending`, `active`, and `suspended` in `summary:type:{<serverType>}` by the corresponding counted amounts. Decrement `total` by the total number of deleted jobs. A zero decrement may be skipped.
+- Decrement `pending`, `active`, and `suspended` in the shared `summary:type:{<serverType>}` by the counts for this server's deleted jobs. Decrement `total` by only this server's deleted-job count. A zero decrement may be skipped. Preserve all remaining counts and metadata.
 - Delete `summary:server:{<serverType>}:<serverId>`.
 - Delete the heartbeat key.
 - Remove the server ID from `servers:live:{<serverType>}`.
@@ -96,7 +105,7 @@ An empty server job index means there are no jobs to delete; the type counters a
 
 ### Phase B — global registry cleanup (registry hash slot)
 
-After Phase A reports that it committed cleanup, remove the server ID from `servers:{registry}:type:<serverType>` in a separate registry-slot operation. Keep `servers:{registry}:types` and the type summary: other servers may still use the type, and the type's metadata is retained.
+After Phase A reports that it committed cleanup, remove only this server ID's matching registry entry from `servers:{registry}:type:<serverType>` in a separate registry-slot operation. Keep `servers:{registry}:types` and every other server ID's registry entry. Keep the type summary and its metadata: other servers may still use the type.
 
 This phase must be idempotent and safe to retry after a worker crash. The cleanup coordinator must also guard against a new incarnation registering between Phase A and Phase B. Use a unique incarnation/generation token for each server process lifetime, stored with the registry entry, and remove the registry entry only if it still contains the expected token. A restarted process registers a new token, so delayed cleanup for the old process cannot unregister the new process.
 
@@ -122,7 +131,7 @@ The heartbeat value should carry or be paired with the incarnation token. The cl
 - Retry transient Redis failures. Both phases are idempotent; a retry must not decrement type counters twice. Phase A achieves this by deleting the server's job index and artifacts in the same atomic script. If the artifacts are already absent, it must report already-cleaned and make no further counter changes.
 - If Phase A finds wrong-type keys, missing indexed job hashes, ownership mismatches, invalid statuses, or insufficient/non-integer type counters, stop and report inconsistent data. Do not guess counter adjustments or delete only part of the server's data. Alert/repair the inconsistency explicitly.
 - Monitor cleanup failures and the age/count of expired candidates so stale entries do not silently accumulate.
-- Restrict cleanup permissions to the trusted cleanup worker; it can permanently delete job records and summary metadata.
+- Restrict cleanup permissions to the trusted cleanup worker; it can permanently delete this server ID's job records and server summary metadata, and decrement shared type counters. It must not delete type-level metadata.
 
 ## API and implementation impact
 
