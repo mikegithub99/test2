@@ -51,11 +51,26 @@ A single Lua script cannot atomically access both the type-partitioned lifecycle
 
 Therefore cleanup is a coordinated, idempotent protocol with two same-slot phases. Do not attempt to combine the global registry keys and per-type keys in one Lua script.
 
+## API fencing and deletion races
+
+Heartbeat expiry does not stop the server process from sending API requests. Cleanup must therefore fence the failed process before deleting its data. Lua atomicity prevents commands from interleaving during a script, but by itself does not prevent requests immediately before or after cleanup.
+
+Add a per-type lifecycle-state HASH:
+
+- `servers:state:{<serverType>}` — field `<serverId>` stores the current incarnation token and lifecycle state (`ACTIVE` or `DELETING`). The representation may be encoded as a single value or separate fields, but comparisons and state changes must be atomic.
+
+Every lifecycle API script (`createPendingJob`, `transitionJob`, and `completeJob`) must receive the caller's incarnation token and, before changing any job/index/summary data, verify that the server is `ACTIVE` and the stored token matches. Otherwise it returns a dedicated stale-incarnation/server-not-active result without modifying data. Heartbeat refresh must perform the same check, so a deleting incarnation cannot renew itself.
+
+Before Phase A cleanup, run a fencing script in the `{serverType}` slot. It verifies that the heartbeat is absent and that the current incarnation matches the expected token, then atomically changes that incarnation's state from `ACTIVE` to `DELETING`. If the heartbeat has been renewed, the token differs, or the state is already inconsistent, it makes no destructive changes. The fence and every API script use the same slot and are atomic, so a concurrent API call is ordered either before the fence (and its changes are included in subsequent cleanup) or after the fence (and is rejected). Do not begin destructive cleanup until fencing succeeds.
+
+Phase A cleanup must require the matching `DELETING` state and incarnation token. It must not clean a replacement incarnation. After Phase A, Phase B conditionally removes the matching registry entry. A new process reusing the same server ID registers a new token and an `ACTIVE` state; delayed requests and cleanup from the old token must not affect it. Registration of a replacement must be coordinated with cleanup state so it cannot be overwritten by delayed old-incarnation operations.
+
 ## Recommended key additions
 
-Add a per-type live-server set:
+Add these per-type keys:
 
 - `servers:live:{<serverType>}`
+- `servers:state:{<serverType>}`
 
 It shares the `{serverType}` hash tag with the heartbeat, jobs, and summaries. A successful heartbeat refresh should atomically:
 
@@ -76,13 +91,14 @@ A cleanup worker periodically obtains candidate IDs from `servers:live:{<serverT
 The script receives only keys with the `{serverType}` hash tag, including:
 
 - `servers:live:{<serverType>}`
+- `servers:state:{<serverType>}`
 - The candidate's heartbeat key.
 - The candidate's server job index.
 - The type-wide job index.
 - The candidate's server summary.
 - The type summary.
 
-The script must first check that the heartbeat is still absent/expired and that the candidate's incarnation still matches the expected token. The incarnation is checked against the `server:<serverId>` field in the type summary (and the heartbeat token, if stored separately). If a heartbeat exists or the incarnation differs, it must make no changes and report that the candidate is live or has been replaced.
+The script must first check that the candidate's lifecycle state is `DELETING` with the expected token, that the heartbeat is still absent/expired, and that the incarnation still matches the `server:<serverId>` field in the type summary. If the heartbeat exists, the state is not `DELETING`, or any incarnation differs, it must make no changes and report that the candidate is live, not fenced, or has been replaced. The preceding fencing operation must have succeeded before this script is invoked.
 
 If the heartbeat is absent and the incarnation matches, the script must preflight all data before writing:
 
@@ -142,12 +158,14 @@ The heartbeat value should carry or be paired with the incarnation token. The cl
 
 A future implementation should add:
 
-- A heartbeat refresh Lua script that sets the TTL-bearing heartbeat and adds the ID to the per-type live set atomically.
+- A heartbeat refresh Lua script that validates the active incarnation, sets the TTL-bearing heartbeat, and adds the ID to the per-type live set atomically.
+- A fencing Lua script that changes the matching incarnation from `ACTIVE` to `DELETING` only when its heartbeat is absent.
+- Incarnation-token validation in every job lifecycle Lua script, rejecting requests from deleting, inactive, or superseded processes.
 - A cleanup API/worker operation that accepts `serverType`, `serverId`, and the expected incarnation token, and reports cleaned, still-live/replaced, already-cleaned, or inconsistent outcomes.
 - A registry representation and Lua operations that register an incarnation and conditionally remove only the matching incarnation.
 - A type-summary membership convention: `server:<serverId>` fields map each registered server ID to its incarnation token. Registration adds/updates only that server's field; cleanup removes only that server's field with `HDEL`. The type summary's counters and metadata remain independent fields in the same hash.
 - A cleanup Lua script embedded in `RedisJobScripts.inc`, with all Phase A keys passed explicitly through `KEYS`.
-- Tests covering multiple jobs in each state, zero-job servers, wrong-type keys, missing jobs, counter underflow, retry/idempotency, heartbeat renewal during cleanup, and server restart with the same server ID.
+- Tests covering multiple jobs in each state, zero-job servers, wrong-type keys, missing jobs, counter underflow, retry/idempotency, API calls racing with fencing, heartbeat renewal racing with fencing, rejected calls after fencing, and server restart with the same server ID.
 - Redis Cluster tests proving each Lua script touches only one hash slot.
 
 The existing public API does not currently implement this cleanup behavior. This document specifies the target design; it does not change runtime behavior by itself.
