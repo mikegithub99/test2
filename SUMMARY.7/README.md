@@ -162,3 +162,39 @@ The type-summary metadata initialization script receives the registering server 
 The implementation requires C++17, redis-plus-plus, hiredis, and a host-provided `get_reg_val(const std::string&)` implementation. Initialize the host configuration registry before constructing `RedisJobStatus` or making the first `RedisClient::Instance()` call. Exact compiler and linker flags depend on the host application's Redis client installation.
 
 No build, unit test, Redis integration test, or Redis Cluster test was run as part of the metadata-helper refactor. Validate against the project's actual build and test setup, including standalone Redis and Redis Cluster, before deploying.
+
+
+## Heartbeat cleanup manager
+
+`HeartbeatManager.h/.cc` implements the background cleanup worker described in
+`HEARTBEAT_DESIGN.md`. Start one manager in the process/service responsible for
+Redis cleanup, after the host registry and Redis client configuration are ready:
+
+```cpp
+#include "RedisJobStatus.h"
+#include "HeartbeatManager.h"
+
+int main()
+{
+  RedisJobStatus status;
+  status.registerServer(typeMetadata, serverMetadata);
+
+  // One cleanup manager can serve all registered server types/IDs.
+  HeartbeatManager cleanup(std::chrono::seconds(5));
+
+  // Start the worker's normal work and keep both objects alive.
+  runWorker();
+}
+```
+
+The manager scans the registry, fences expired IDs in their per-type Redis
+Cluster slot, removes their jobs and per-server summary in Phase A, then
+removes the ID from the registry in Phase B. The terminal `DELETING` state is
+retained to prevent accidental reactivation of a process ID and to make a
+crash between phases recoverable. Since server IDs are guaranteed unique and
+never reused, a replacement process registers under a different ID.
+
+Compile `HeartbeatManager.cc` alongside `RedisJobStatus.cc` and
+`RedisClient.cc`, with the same C++17, redis-plus-plus, hiredis, and host
+configuration dependencies. No build or Redis integration test has been run
+for this implementation yet.
