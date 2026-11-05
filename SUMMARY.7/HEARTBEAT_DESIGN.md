@@ -41,9 +41,9 @@ One Lua script cannot atomically access both the per-type keys and global `{regi
 
 ## Heartbeat timing and ownership
 
-Each application process runs exactly one `RedisHeartbeatManager` for its configured, process-unique `(serverType, serverId)`. This is one manager per process, not one manager shared across all distributed processes. The manager both publishes its own heartbeat and scans registered IDs for expired peers. It starts after `registerServer()` has completed.
+Each application process publishes its own heartbeat through `RedisJobStatus`. Exactly one separately deployed `RedisHeartbeatManager` process scans all registered server types and IDs for expiry. Worker/server processes do not start cleanup scanners. The manager both publishes its own heartbeat and scans registered IDs for expired peers. It starts after `registerServer()` has completed.
 
-The default timing is a 10-second heartbeat refresh interval, a 30-second Redis TTL, and a 5-second cleanup scan interval. The manager refreshes immediately, then every 10 seconds under normal scheduling. A process is considered expired only after Redis has removed its heartbeat key; cleanup then runs on a later scan. Expected detection latency is therefore about 30 seconds plus up to one scan interval and Redis/network/scheduling delay. The 3:1 TTL-to-refresh ratio tolerates roughly 20 seconds of missed refresh time, but cannot protect against an outage or pause longer than the TTL.
+The default timing is a 10-second heartbeat refresh interval, a 30-second Redis TTL, and a 5-second cleanup scan interval. Each server process refreshes immediately after successful registration, then every 10 seconds under normal scheduling. A process is considered expired only after Redis has removed its heartbeat key; cleanup then runs on a later scan. Expected detection latency is therefore about 30 seconds plus up to one scan interval and Redis/network/scheduling delay. The 3:1 TTL-to-refresh ratio tolerates roughly 20 seconds of missed refresh time, but cannot protect against an outage or pause longer than the TTL.
 
 All Lua used by job lifecycle, heartbeat refresh, fencing, and cleanup is centralized in `RedisJobScripts.inc`. Both `RedisJobStatus.cc` and `RedisHeartbeatManager.cc` include this shared C++ raw-string script file. Do not embed separate Lua script bodies in a `.cc` file.
 
