@@ -41,7 +41,7 @@ One Lua script cannot atomically access both the per-type keys and global `{regi
 
 ## Heartbeat timing and ownership
 
-Each application process publishes its own heartbeat through `RedisJobStatus`. Exactly one separately deployed `RedisHeartbeatManager` process scans all registered server types and IDs for expiry. Worker/server processes do not start cleanup scanners. The manager both publishes its own heartbeat and scans registered IDs for expired peers. It starts after `registerServer()` has completed.
+Each application process publishes its own heartbeat through `RedisJobStatus`. Exactly one separately deployed `RedisHeartbeatManager` process scans all registered server types and IDs for expiry. Worker/server processes do not start cleanup scanners. The central manager only scans registered IDs for expired peers. It is started separately from the worker registration flow.
 
 The default timing is a 10-second heartbeat refresh interval, a 30-second Redis TTL, and a 5-second cleanup scan interval. Each server process refreshes immediately after successful registration, then every 10 seconds under normal scheduling. A process is considered expired only after Redis has removed its heartbeat key; cleanup then runs on a later scan. Expected detection latency is therefore about 30 seconds plus up to one scan interval and Redis/network/scheduling delay. The 3:1 TTL-to-refresh ratio tolerates roughly 20 seconds of missed refresh time, but cannot protect against an outage or pause longer than the TTL.
 
