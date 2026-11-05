@@ -212,9 +212,7 @@ RedisJobStatus::RedisJobStatus(ConfigProvider provider)
 
 RedisJobStatus::Result RedisJobStatus::createPendingJob(
     const string& jobId,
-    const map<string, string>& fields,
-    const map<string, string>& serverTypeMetadata,
-    const map<string, string>& serverMetadata)
+    const map<string, string>& metadata)
 {
   if (!m_enabled)
   {
@@ -223,33 +221,20 @@ RedisJobStatus::Result RedisJobStatus::createPendingJob(
   validateIdentifier(m_serverType, "serverType", true);
   validateIdentifier(m_serverId, "serverId");
   validateIdentifier(jobId, "jobId");
-  for (const auto& item : serverTypeMetadata)
-  {
-    if (item.first.empty() || item.first == "createdByServerId" ||
-        item.first == "createdAt")
-      throw invalid_argument("RedisJobStatus: empty or reserved server-type metadata field");
-  }
-  for (const auto& item : serverMetadata)
+  for (const auto& item : metadata)
   {
     if (item.first.empty())
-      throw invalid_argument("RedisJobStatus: server metadata field must not be empty");
+      throw invalid_argument("RedisJobStatus: job metadata field must not be empty");
   }
-  const auto now = std::time(nullptr);
-  const std::tm* utc = std::gmtime(&now);
-  if (!utc) throw runtime_error("RedisJobStatus: unable to generate metadata timestamp");
-  std::ostringstream timestamp;
-  timestamp << std::put_time(utc, "%Y-%m-%dT%H:%M:%SZ");
 
   const string reference = jobReference(m_serverId, jobId);
   KeyList keys = {
       jobKey(m_serverType, m_serverId, jobId), typeJobsKey(m_serverType),
       serverJobsKey(m_serverType, m_serverId), typeSummaryKey(m_serverType),
       serverSummaryKey(m_serverType, m_serverId)};
-  ArgList args = {jobId, m_serverType, m_serverId, reference, "0",
-                   std::to_string(serverTypeMetadata.size()),
-                   std::to_string(serverMetadata.size()), timestamp.str()};
+  ArgList args = {jobId, m_serverType, m_serverId, reference, "0"};
   int jobFieldCount = 0;
-  for (const auto& field : fields)
+  for (const auto& field : metadata)
   {
     if (field.first == "jobId" || field.first == "status" ||
         field.first == "serverType" || field.first == "serverId") continue;
@@ -317,11 +302,24 @@ RedisJobStatus::Result RedisJobStatus::completeJob(const string& jobId)
   return static_cast<Result>(result);
 }
 
-void RedisJobStatus::registerServer()
+void RedisJobStatus::registerServer(
+    const map<string, string>& serverTypeMetadata,
+    const map<string, string>& serverMetadata)
 {
   if (!m_enabled) return;
   validateIdentifier(m_serverType, "serverType", true);
   validateIdentifier(m_serverId, "serverId");
+  for (const auto& item : serverTypeMetadata)
+  {
+    if (item.first.empty() || item.first == "createdByServerId" ||
+        item.first == "createdAt")
+      throw invalid_argument("RedisJobStatus: empty or reserved server-type metadata field");
+  }
+  for (const auto& item : serverMetadata)
+  {
+    if (item.first.empty())
+      throw invalid_argument("RedisJobStatus: server metadata field must not be empty");
+  }
   const KeyList keys = {kServerTypesKey, serverRegistryKey(m_serverType)};
   const ArgList args = {m_serverType, m_serverId};
 
@@ -345,12 +343,32 @@ void RedisJobStatus::registerServer()
   std::ostringstream timestamp;
   timestamp << std::put_time(utc, "%Y-%m-%dT%H:%M:%SZ");
   const KeyList summaryKeys = {typeSummaryKey(m_serverType)};
-  const ArgList summaryArgs = {m_serverId, timestamp.str()};
+  ArgList summaryArgs = {m_serverId, timestamp.str(),
+                         std::to_string(serverTypeMetadata.size())};
+  for (const auto& item : serverTypeMetadata)
+  {
+    summaryArgs.push_back(item.first);
+    summaryArgs.push_back(item.second);
+  }
   m_client->execute(
       [&](auto& redis)
       {
         return evalResult(
             redis, kInitializeTypeSummaryMetadataScript, summaryKeys, summaryArgs);
+      });
+
+  const KeyList serverKeys = {serverSummaryKey(m_serverType, m_serverId)};
+  ArgList serverArgs = {std::to_string(serverMetadata.size())};
+  for (const auto& item : serverMetadata)
+  {
+    serverArgs.push_back(item.first);
+    serverArgs.push_back(item.second);
+  }
+  m_client->execute(
+      [&](auto& redis)
+      {
+        return evalResult(
+            redis, kSetServerSummaryMetadataScript, serverKeys, serverArgs);
       });
 }
 
