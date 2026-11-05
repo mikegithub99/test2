@@ -94,7 +94,7 @@ Requires C++17, redis-plus-plus and hiredis. The host application must provide `
 
 ## Fixed server identity and duplicate application IDs
 
-The worker identity is supplied explicitly when registering: `registerServer(serverType, serverId, serverTypeMetadata, serverMetadata)`. The object retains that identity for `createPendingJob(jobId, metadata)`, `transitionJob(jobId, state)`, `completeJob(jobId)`, and `refreshHeartbeat(ttlSeconds)`. The environment/host registry is used only for the `redisJobStatusEnabled` feature switch; it does not provide server type or server ID.
+The worker identity is read at construction from the host registry values `redisJobStatusServerType` and `redisJobStatusServerId`, alongside `redisJobStatusEnabled`. The object retains that identity for `registerServer(serverTypeMetadata, serverMetadata)`, `createPendingJob(jobId, metadata)`, `transitionJob(jobId, state)`, `completeJob(jobId)`, and `refreshHeartbeat(ttlSeconds)`. This allows separate call sites to use separate `RedisJobStatus` instances, provided each instance is constructed with the same configured identity.
 
 Server-type metadata is merged into the type summary hash during registration: supplied fields replace matching fields and unspecified fields are preserved. Server-ID metadata is merged into that server's summary during registration. Metadata fields use the `meta:<name>` prefix. Server-type metadata names `createdByServerId` and `createdAt` are reserved. When a type summary hash is first created, the script stores the registering server ID as `meta:createdByServerId` and an ISO-8601 UTC timestamp as `meta:createdAt`. These system fields are never overwritten by later registrations.
 
@@ -107,7 +107,7 @@ std::map<std::string, std::string> typeMetadata = {
 std::map<std::string, std::string> serverMetadata = {
     {"host", "worker-17"}, {"zone", "west"}
 };
-status.registerServer("query", "worker-17", typeMetadata, serverMetadata);
+status.registerServer(typeMetadata, serverMetadata);
 status.createPendingJob("job-100");
 ```
 
