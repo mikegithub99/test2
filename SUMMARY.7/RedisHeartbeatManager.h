@@ -8,7 +8,7 @@
 #ifndef REDIS_HEARTBEAT_MANAGER_H
 #define REDIS_HEARTBEAT_MANAGER_H
 
-#include <atomic>
+#include <cstdint>
 #include <chrono>
 #include <condition_variable>
 #include <memory>
