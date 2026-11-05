@@ -196,9 +196,10 @@ void RedisHeartbeatManager::scanOnce()
         const auto cleaned = redis.template eval<int64_t>(
             kCleanupExpiredServerScript, keys.begin(), keys.end(),
             args.begin(), args.end());
-        if (cleaned == 1)
+        if (cleaned == 1 || cleaned == 2)
         {
           // Registry keys use {registry}, so Phase B is a separate command.
+          // Result 2 means another cleanup worker already committed Phase A.
           redis.srem(registryServersKey(type), id);
         }
       }
