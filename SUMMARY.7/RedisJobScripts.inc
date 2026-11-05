@@ -52,8 +52,13 @@ local function validtype(key, expected)
   return t == 'none' or t == expected
 end
 
-if redis.call('EXISTS', jobKey) == 1 then
+local existingJobKeyType = keytype(jobKey)
+if existingJobKeyType == 'hash' then
   return RESULT_ALREADY_EXISTS
+elseif existingJobKeyType ~= 'none' then
+  -- A job key must be a HASH. A different existing type is corrupted data,
+  -- not a duplicate job ID.
+  return RESULT_DATA_INCONSISTENT
 end
 if not validtype(typeJobsKey, 'set') or
    not validtype(serverJobsKey, 'set') or
