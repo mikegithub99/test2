@@ -25,10 +25,10 @@
  * instances are tracked in servers:{registry}:type:serverType. Both registry
  * keys share the {registry} Redis Cluster hash tag for atomic registration.
  *
- * All lifecycle keys use the configured server type as their Redis Cluster
- * hash tag. Worker identity is captured once in Config; Lua scripts validate
- * ownership against the stored job HASH before changing state. Read-only
- * dashboard calls can use an empty server identity.
+ * All lifecycle keys use the registered server type as their Redis Cluster
+ * hash tag. Worker identity is supplied to registerServer() and retained by
+ * this object for subsequent lifecycle and heartbeat calls. Lua scripts
+ * validate ownership against the stored job HASH before changing state.
  */
 class RedisJobStatus final
 {
@@ -70,16 +70,14 @@ public:
   struct Config
   {
     bool enabled = true;
-    std::string serverType;
-    std::string serverId;
   };
 
   using ConfigProvider = std::function<Config()>;
 
   /**
-   * @brief Creates the API with a fixed server identity and optional enablement.
-   * @param provider Optional provider; by default reads redisJobStatusEnabled,
-   *        redisJobStatusServerType, and redisJobStatusServerId through get_reg_val().
+   * @brief Creates the API with optional enablement.
+   * @param provider Optional provider; by default reads redisJobStatusEnabled
+   *        through get_reg_val(). Server identity is supplied to registerServer().
    */
   explicit RedisJobStatus(ConfigProvider provider = {});
 
@@ -108,11 +106,15 @@ public:
   Result completeJob(const std::string& jobId);
 
   /**
-   * @brief Registers this object's configured identity and stores its metadata.
+   * @brief Registers a server identity and stores its metadata.
+   * @param serverType Logical server type; also the Redis Cluster hash tag.
+   * @param serverId Unique instance ID within the server type.
    * @param serverTypeMetadata Metadata merged into the server-type summary.
    * @param serverMetadata Metadata merged into this server's summary.
    */
   void registerServer(
+      const std::string& serverType,
+      const std::string& serverId,
       const std::map<std::string, std::string>& serverTypeMetadata = {},
       const std::map<std::string, std::string>& serverMetadata = {});
 
