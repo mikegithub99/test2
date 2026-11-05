@@ -13,9 +13,9 @@ This folder documents the proposed heartbeat-expiry cleanup design for Redis job
 ## Proposed components
 
 - `RedisJobStatus` retains its existing configured identity and Redis client. It does not generate a second UUID or own a cleanup thread.
-- A separate `HeartbeatManager` owns a background thread and its Redis access.
-- Heartbeat refresh writes the configured `serverId` as the heartbeat value with a TTL and updates the per-type live-server set atomically.
-- The manager discovers candidates, fences expired IDs, performs per-type cleanup, then removes the registration in a separate registry-slot operation.
+- One process-wide `RedisHeartbeatManager` owns the heartbeat publisher and expiry-cleanup worker. It starts after successful `registerServer()`.
+- Heartbeat refresh writes the configured `serverId` as the heartbeat value with a 30-second TTL every 10 seconds and updates the per-type live-server set atomically. Cleanup scans run every 5 seconds.
+- The manager refreshes its own heartbeat, discovers candidates, fences expired IDs, performs per-type cleanup, then removes the registration in a separate registry-slot operation.
 
 ## Cleanup safety
 
