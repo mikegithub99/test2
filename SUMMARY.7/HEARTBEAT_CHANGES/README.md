@@ -25,10 +25,10 @@ A per-type state hash records `ACTIVE` or `DELETING`. Heartbeat refresh and all 
 
 Redis Cluster requires two phases because per-type keys use the `{serverType}` hash tag while registration keys use `{registry}`:
 
-1. Phase A fences and cleans this server using only per-type keys.
+1. Phase A fences and cleans this server using only per-type keys, retaining a terminal `DELETING` tombstone.
 2. Phase B removes this unique server ID from the registry using only registry-slot keys, after Phase A is confirmed committed.
 
-Lua scripts must preflight key types, job ownership/status, type-index membership, and counter validity before writing. Lua execution is atomic against interleaving but does not roll back earlier writes after a runtime error. Both phases must be idempotent and safe to retry.
+Lua scripts must preflight key types, job ownership/status, type-index membership, and counter validity before writing. Lua execution is atomic against interleaving but does not roll back earlier writes after a runtime error. Both phases must be idempotent and safe to retry. If the manager crashes between phases, a later pass recognizes a terminal `DELETING` state with per-server artifacts already absent and retries Phase B.
 
 ## Files
 
@@ -37,3 +37,12 @@ Lua scripts must preflight key types, job ownership/status, type-index membershi
 ## Status
 
 This is a design proposal, not an implementation. The existing runtime behavior is unchanged until the manager, scripts, and tests are implemented.
+
+
+## Source implementation
+
+- `../HeartbeatManager.h/.cc` — background scanner, atomic expiry fence, per-type cleanup Lua execution, and separate registry removal.
+- `../RedisJobStatus.cc` and `../RedisJobStatus.h` — initialize per-type `ACTIVE` state, include the state key in lifecycle scripts, reject lifecycle calls after fencing, and return a server-not-active result.
+- `../RedisJobScripts.inc` — atomic heartbeat/live-set refresh and lifecycle state checks.
+
+The terminal `DELETING` marker is intentionally retained: process IDs are never reused, and retaining the tombstone prevents a delayed registration from reactivating a cleaned identity. A cleanup pass can recognize that Phase A already committed and retry Phase B.
