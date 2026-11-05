@@ -39,6 +39,14 @@ Job, index, summary, heartbeat, live-set, and state keys use the `{serverType}` 
 
 One Lua script cannot atomically access both the per-type keys and global `{registry}` keys in Redis Cluster. Cleanup is therefore two idempotent phases: Phase A operates only in the `{serverType}` slot; Phase B operates only in the `{registry}` slot. Never combine the two slots in one script.
 
+## Heartbeat timing and ownership
+
+Each application process runs exactly one `RedisHeartbeatManager` for its configured, process-unique `(serverType, serverId)`. This is one manager per process, not one manager shared across all distributed processes. The manager both publishes its own heartbeat and scans registered IDs for expired peers. It starts after `registerServer()` has completed.
+
+The default timing is a 10-second heartbeat refresh interval, a 30-second Redis TTL, and a 5-second cleanup scan interval. The manager refreshes immediately, then every 10 seconds under normal scheduling. A process is considered expired only after Redis has removed its heartbeat key; cleanup then runs on a later scan. Expected detection latency is therefore about 30 seconds plus up to one scan interval and Redis/network/scheduling delay. The 3:1 TTL-to-refresh ratio tolerates roughly 20 seconds of missed refresh time, but cannot protect against an outage or pause longer than the TTL.
+
+All Lua used by job lifecycle, heartbeat refresh, fencing, and cleanup is centralized in `RedisJobScripts.inc`. Both `RedisJobStatus.cc` and `RedisHeartbeatManager.cc` include this shared C++ raw-string script file. Do not embed separate Lua script bodies in a `.cc` file.
+
 ## Heartbeat and lifecycle fencing
 
 Heartbeat refresh is a Lua script in the `{serverType}` slot. It verifies that `servers:state:{<serverType>}` contains `ACTIVE` for this ID, sets the heartbeat value to the exact `serverId` with a positive TTL, and adds the ID to `servers:live:{<serverType>}` atomically.
