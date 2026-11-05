@@ -92,6 +92,16 @@ string heartbeatKey(
   return "heartbeat:server:{" + serverType + "}:" + serverId;
 }
 
+string liveServersKey(const string& serverType)
+{
+  return "servers:live:{" + serverType + "}";
+}
+
+string serverStateKey(const string& serverType)
+{
+  return "servers:state:{" + serverType + "}";
+}
+
 using KeyList = vector<string>;
 using ArgList = vector<string>;
 
@@ -105,7 +115,8 @@ KeyList lifecycleKeys(
       typeJobsKey(serverType),
       serverJobsKey(serverType, serverId),
       typeSummaryKey(serverType),
-      serverSummaryKey(serverType, serverId)};
+      serverSummaryKey(serverType, serverId),
+      serverStateKey(serverType)};
 }
 
 // Job hash fields owned by RedisJobStatus rather than caller metadata.
@@ -365,6 +376,19 @@ void RedisJobStatus::registerServer(
   const KeyList keys = {kServerTypesKey, serverRegistryKey(m_serverType)};
   const ArgList args = {m_serverType, m_serverId};
 
+  // Establish the per-type lifecycle state first. A DELETING or otherwise
+  // terminal identity is never reactivated; process IDs are never reused.
+  const KeyList stateKeys = {serverStateKey(m_serverType)};
+  const ArgList stateArgs = {m_serverId};
+  const auto activation = m_client->execute([&](auto& redis)
+  {
+    return evalResult(redis, kActivateServerScript, stateKeys, stateArgs);
+  });
+  if (activation != 1)
+  {
+    throw runtime_error("RedisJobStatus: serverId is already fenced and cannot be reactivated");
+  }
+
   // Both registry keys share the {registry} hash tag, so one script can
   // update them atomically in standalone Redis and Redis Cluster.
   m_client->execute(
@@ -433,15 +457,19 @@ void RedisJobStatus::refreshHeartbeat(int64_t ttlSeconds)
         "RedisJobStatus: heartbeat TTL must be positive");
   }
 
-  const auto key = heartbeatKey(m_serverType, m_serverId);
-  m_client->execute(
-      [&](auto& redis)
-      {
-        redis.set(
-            key,
-            m_serverId,
-            seconds(ttlSeconds));
-      });
+  const KeyList keys = {
+      heartbeatKey(m_serverType, m_serverId),
+      liveServersKey(m_serverType),
+      serverStateKey(m_serverType)};
+  const ArgList args = {m_serverId, to_string(ttlSeconds)};
+  const auto refreshed = m_client->execute([&](auto& redis)
+  {
+    return evalResult(redis, kRefreshHeartbeatScript, keys, args);
+  });
+  if (refreshed != 1)
+  {
+    throw runtime_error("RedisJobStatus: heartbeat rejected because server is not ACTIVE");
+  }
 }
 
 map<string, int64_t> RedisJobStatus::getTypeSummary(
