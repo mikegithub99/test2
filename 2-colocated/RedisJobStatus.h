@@ -78,11 +78,14 @@ public:
   using ConfigProvider = std::function<Config()>;
 
   /**
-   * @brief Creates the API with optional configuration.
-   * @param provider Optional provider; by default reads redisJobStatusEnabled,
-   *        redisJobStatusServerType, and redisJobStatusServerId through get_reg_val().
+   * @brief Gets the process-wide status API, initializing it lazily.
+   * @param provider Optional configuration provider. If omitted, the default
+   *        provider reads redisJobStatusEnabled, redisJobStatusServerType,
+   *        and redisJobStatusServerId through get_reg_val(). A supplied
+   *        provider must be passed on the first call.
    */
-  explicit RedisJobStatus(ConfigProvider provider = {});
+  static std::shared_ptr<RedisJobStatus> Instance(ConfigProvider provider = {});
+
   RedisJobStatus(const RedisJobStatus&) = delete;
   RedisJobStatus& operator=(const RedisJobStatus&) = delete;
 
@@ -144,6 +147,9 @@ public:
       const std::string& serverId);
 
 private:
+  /** @brief Constructs the singleton using the first call's configuration provider. */
+  explicit RedisJobStatus(ConfigProvider provider);
+
   static std::string stateName(State state);
   static void validateIdentifier(
       const std::string& value,
