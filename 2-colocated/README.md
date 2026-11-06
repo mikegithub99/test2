@@ -201,3 +201,29 @@ A crash between phases is recoverable: a later scan retries Phase B. Redis Lua i
 Requires C++17, redis-plus-plus, hiredis, and host-provided `get_reg_val(const std::string&)` and `initializeConfiguration()`. Compile `RedisClient.cc`, `RedisJobStatus.cc`, and `RedisHeartbeatManager.cc` into the worker, with the project's Redis include/link settings. The `heartbeat.cc` file is an example main; integrate its startup sequence into the host worker rather than linking a second main.
 
 The code has not been compiled or tested against live Redis or Redis Cluster. Verify the installed redis-plus-plus version supports `eval<std::vector<std::string>>`. Test lease acquisition/takeover and stale tokens, lease expiry during slow scans, heartbeat/fencing and lifecycle races, Phase A/Phase B recovery, dashboard reads concurrent with cleanup, malformed key types, counter integrity, and actual Cluster slot routing before deployment.
+
+## Cleanup coordination and stale managers
+
+### Key question
+
+What happens if a cleanup manager acquires the Redis cleanup lease, pauses long enough for that lease to expire, and then resumes after another manager has acquired the lease? Could both managers continue cleanup and delete the same server's data?
+
+### Analysis
+
+The cleanup lease coordinates normal scan ownership; it is not the sole correctness mechanism. It is acquired with `SET NX PX`, renewed only when the stored owner token matches, and released only by its current owner. If a manager loses the lease, its next renewal attempt fails. A paused manager can nevertheless resume and execute code before it reaches that renewal check, so lease expiry alone does not stop an old process.
+
+Correctness is protected at the per-server level by the Redis Lua lifecycle scripts:
+
+- **Atomic fencing:** `kFenceExpiredServerScript` checks that the heartbeat is absent, that the server has published its first heartbeat, and that its state is `ACTIVE`. It then changes the state to `DELETING` atomically. Heartbeat refresh and this transition operate in the same per-type Redis Cluster slot, so Redis serializes the competing scripts. Whichever runs first determines whether the heartbeat is refreshed or the server is fenced.
+- **No reactivation or new work:** Once the state is `DELETING`, heartbeat refresh and job creation/transition operations that require an `ACTIVE` server are rejected. Registration also does not reactivate a terminal server ID.
+- **Atomic, repeat-safe cleanup:** `kCleanupExpiredServerScript` rechecks the `DELETING` state and absence of the heartbeat before making changes. Its validation and deletions/counter updates execute in one Lua script. If another manager has already completed Phase A, the script recognizes the completed shape and returns the already-cleaned result rather than decrementing counters again.
+- **Recoverable registry cleanup:** The manager removes the ID from the registry after Phase A reports completion. The retained `DELETING` tombstone makes a cleanup interrupted between phases discoverable and prevents accidental reuse of that server ID.
+
+Therefore, two managers may briefly overlap after a lease expires, but their per-server operations are serialized and guarded by lifecycle state. For the operations currently implemented, a separate leader-election protocol, quorum, or cleanup fencing-token subsystem is not required. The lease reduces unnecessary concurrent scans; the per-server Lua scripts protect data correctness.
+
+### Assumptions and limits
+
+This safety argument depends on all lifecycle mutations and destructive cleanup remaining behind the guarded Lua scripts, on the scripts continuing to operate on the appropriate per-type Redis slot, and on server IDs being unique and never reused. Any future destructive operation performed outside those checks must be reviewed for stale-manager safety. The lease token is not passed to the per-server scripts, so it should not be treated as a hard execution fence.
+
+This is a source-level analysis, not a demonstrated failure-injection result. Before deployment, test lease expiry while a manager is paused, takeover by a second manager, concurrent fencing/heartbeat refresh, overlapping Phase A cleanup, and recovery between Phase A and Phase B.
+
