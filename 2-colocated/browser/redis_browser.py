@@ -445,6 +445,7 @@ class RedisBrowser(App):
                 if amount:
                     self.client.hincrby(type_summary, field, -amount)
         self.client.delete(server_jobs, summary_key, f"heartbeat:server:{{{server_type}}}:{server_id}")
+        self.client.hdel(f"servers:state:{{{server_type}}}", server_id)
         self.client.srem(f"servers:{{registry}}:type:{server_type}", server_id)
 
     def _delete_server_type(self, server_type: str) -> None:
