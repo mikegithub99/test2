@@ -32,26 +32,32 @@ class RedisJobStatus;
 class RedisHeartbeatManager final
 {
 public:
-  /** @brief Configuration containing only the two Redis TTL values. */
+  /**
+   * @brief Timing configuration for heartbeat publication and stale-worker cleanup.
+   *
+   * All durations are independently configurable. Defaults preserve the
+   * original manager behavior.
+   */
   struct Config
   {
     std::int64_t heartbeatTtlSeconds = 30;
+    std::int64_t heartbeatRefreshIntervalSeconds = 10;
     std::int64_t cleanupLeaseTtlMilliseconds = 30000;
+    std::int64_t cleanupLeaseRenewIntervalSeconds = 5;
+    std::int64_t cleanupScanIntervalSeconds = 5;
   };
 
   using ConfigProvider = std::function<Config()>;
-
-  /** @brief Interval between stale-worker cleanup scans, in seconds. */
-  static constexpr std::int64_t kCleanupScanIntervalSeconds = 5;
 
   /**
    * @brief Starts the process-wide cleanup manager.
    *
    * The provider is evaluated only on the first call. An empty provider uses
-   * the default TTL values. Repeated calls do not create additional threads.
+   * default configuration. Repeated calls do not create additional threads.
+   * Call Start(provider) before HeartbeatStart() to inject custom settings.
    *
-   * @param provider Optional source of heartbeat and cleanup-lease TTL values.
-   * @throws std::invalid_argument if either configured TTL is not positive.
+   * @param provider Optional source of all manager timing settings.
+   * @throws std::invalid_argument if a configured duration is not positive.
    */
   static void Start(ConfigProvider provider = {});
 
@@ -93,9 +99,8 @@ private:
   /** @brief Runs cleanup scans until shutdown is requested. */
   void cleanupLoop();
 
-  Config m_config; ///< Injected TTL configuration.
+  Config m_config; ///< Injected heartbeat and cleanup timing configuration.
   std::shared_ptr<RedisClient> m_client; ///< Redis client used for cleanup.
-  std::chrono::seconds m_scanInterval{kCleanupScanIntervalSeconds}; ///< Cleanup scan cadence.
   std::mutex m_mutex; ///< Protects cleanup-thread shutdown state.
   std::condition_variable m_wakeup; ///< Wakes the cleanup loop during shutdown.
   bool m_stopping = false; ///< True after cleanup shutdown is requested.
