@@ -5,6 +5,7 @@
 
 #include "RedisHeartbeatManager.h"
 
+#include "HeartbeatRunner.h"
 #include "RedisJobStatus.h"
 #include "RedisJobScripts.inc"
 
@@ -135,99 +136,7 @@ int64_t evalScript(
   return redis.template eval<int64_t>(
       script, keys.begin(), keys.end(), args.begin(), args.end());
 }
-} // namespace
 
-/**
- * @class HeartbeatRunner
- * @brief Owns the background thread that periodically refreshes one worker heartbeat.
- *
- * The runner retains shared ownership of RedisJobStatus. It refreshes the
- * heartbeat immediately, then waits between refresh attempts. A failed refresh
- * is logged and retried on the next interval.
- */
-class HeartbeatRunner final
-{
-public:
-  /**
-   * @brief Creates the runner and starts its background thread.
-   * @param status Worker status whose heartbeat is published.
-   */
-  HeartbeatRunner(
-      std::shared_ptr<RedisJobStatus> status,
-      std::int64_t heartbeatTtlSeconds,
-      std::int64_t heartbeatRefreshIntervalSeconds)
-      : m_status(std::move(status)),
-        m_heartbeatTtlSeconds(heartbeatTtlSeconds),
-        m_heartbeatRefreshIntervalSeconds(heartbeatRefreshIntervalSeconds),
-        m_thread(&HeartbeatRunner::run, this)
-  {
-  }
-
-  /**
-   * @brief Requests shutdown and joins the heartbeat thread.
-   */
-  ~HeartbeatRunner()
-  {
-    {
-      std::lock_guard<std::mutex> lock(m_mutex);
-      m_stopping = true;
-    }
-
-    m_wakeup.notify_all();
-
-    if (m_thread.joinable())
-    {
-      m_thread.join();
-    }
-  }
-
-private:
-  /** @brief Refreshes the heartbeat immediately and on each configured interval. */
-  void run()
-  {
-    std::unique_lock<std::mutex> lock(m_mutex);
-
-    while (!m_stopping)
-    {
-      lock.unlock();
-
-      try
-      {
-        m_status->refreshHeartbeat(m_heartbeatTtlSeconds);
-      }
-      catch (const std::exception& e)
-      {
-        std::cerr << "HeartbeatStart: heartbeat refresh failed: "
-                  << e.what() << '\n';
-      }
-      catch (...)
-      {
-        std::cerr
-            << "HeartbeatStart: heartbeat refresh failed: unknown exception\n";
-      }
-
-      lock.lock();
-      m_wakeup.wait_for(
-          lock,
-          std::chrono::seconds(m_heartbeatRefreshIntervalSeconds),
-          [this]
-          {
-            return m_stopping;
-          });
-    }
-  }
-
-  std::shared_ptr<RedisJobStatus> m_status; ///< Retained worker status object.
-  std::int64_t m_heartbeatTtlSeconds; ///< TTL supplied to heartbeat refreshes.
-  std::int64_t m_heartbeatRefreshIntervalSeconds; ///< Delay between heartbeat refreshes.
-  std::mutex m_mutex; ///< Protects the runner shutdown flag.
-  std::condition_variable m_wakeup; ///< Wakes the runner during shutdown.
-  bool m_stopping = false; ///< True after shutdown is requested.
-  std::thread m_thread; ///< Background heartbeat publication thread.
-};
-
-namespace
-{
 /** @brief Returns the mutex protecting the process-wide heartbeat runner. */
 std::mutex& heartbeatRunnerMutex()
 {
@@ -244,12 +153,24 @@ std::unique_ptr<HeartbeatRunner>& processHeartbeatRunner()
 } // namespace
 
 /**
- * @brief Constructs the cleanup manager and starts its background thread.
+ * @brief Constructs the cleanup manager, loads its configuration, and starts cleanup.
+ * @param provider Source of manager timing settings; an empty provider selects defaults.
+ * @throws std::invalid_argument if a configured duration is not positive.
  */
-RedisHeartbeatManager::RedisHeartbeatManager(const Config& config)
-    : m_config(config),
+RedisHeartbeatManager::RedisHeartbeatManager(ConfigProvider provider)
+    : m_config(provider ? provider() : Config{}),
       m_client(RedisClient::Instance())
 {
+  if (m_config.heartbeatTtlSeconds <= 0 ||
+      m_config.heartbeatRefreshIntervalSeconds <= 0 ||
+      m_config.cleanupLeaseTtlMilliseconds <= 0 ||
+      m_config.cleanupLeaseRenewIntervalSeconds <= 0 ||
+      m_config.cleanupScanIntervalSeconds <= 0)
+  {
+    throw std::invalid_argument(
+        "RedisHeartbeatManager: all configured durations must be positive");
+  }
+
   m_cleanupThread = std::thread(&RedisHeartbeatManager::cleanupLoop, this);
 }
 
@@ -261,6 +182,7 @@ RedisHeartbeatManager::~RedisHeartbeatManager()
 
 /**
  * @brief Starts the process-wide cleanup manager exactly once.
+ * @param provider Optional source of manager timing settings.
  */
 void RedisHeartbeatManager::Start(ConfigProvider provider)
 {
@@ -269,17 +191,7 @@ void RedisHeartbeatManager::Start(ConfigProvider provider)
 
   if (!manager)
   {
-    const Config config = provider ? provider() : Config{};
-    if (config.heartbeatTtlSeconds <= 0 ||
-        config.heartbeatRefreshIntervalSeconds <= 0 ||
-        config.cleanupLeaseTtlMilliseconds <= 0 ||
-        config.cleanupLeaseRenewIntervalSeconds <= 0 ||
-        config.cleanupScanIntervalSeconds <= 0)
-    {
-      throw std::invalid_argument(
-          "RedisHeartbeatManager: all configured durations must be positive");
-    }
-    manager.reset(new RedisHeartbeatManager(config));
+    manager.reset(new RedisHeartbeatManager(std::move(provider)));
   }
 }
 
@@ -413,7 +325,8 @@ void RedisHeartbeatManager::scanOnce()
         {
           const auto now = std::chrono::steady_clock::now();
 
-          if (now - lastRenewal <\n              std::chrono::seconds(m_config.cleanupLeaseRenewIntervalSeconds))
+          if (now - lastRenewal <
+              std::chrono::seconds(m_config.cleanupLeaseRenewIntervalSeconds))
           {
             return;
           }
