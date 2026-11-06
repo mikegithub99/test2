@@ -103,20 +103,6 @@ string ownerToken()
   return out.str();
 }
 
-/** @brief Returns the mutex protecting the process-wide cleanup manager. */
-std::mutex& managerMutex()
-{
-  static std::mutex value;
-  return value;
-}
-
-/** @brief Returns the process-wide cleanup manager instance. */
-std::unique_ptr<RedisHeartbeatManager>& processManager()
-{
-  static std::unique_ptr<RedisHeartbeatManager> value;
-  return value;
-}
-
 /**
  * @brief Evaluates a Redis Lua script and converts its result to int64_t.
  * @tparam Redis Redis++ client type.
@@ -137,19 +123,6 @@ int64_t evalScript(
       script, keys.begin(), keys.end(), args.begin(), args.end());
 }
 
-/** @brief Returns the mutex protecting the process-wide heartbeat runner. */
-std::mutex& heartbeatRunnerMutex()
-{
-  static std::mutex value;
-  return value;
-}
-
-/** @brief Returns the process-wide heartbeat runner instance. */
-std::unique_ptr<HeartbeatRunner>& processHeartbeatRunner()
-{
-  static std::unique_ptr<HeartbeatRunner> value;
-  return value;
-}
 } // namespace
 
 /**
@@ -184,15 +157,12 @@ RedisHeartbeatManager::~RedisHeartbeatManager()
  * @brief Starts the process-wide cleanup manager exactly once.
  * @param provider Optional source of manager timing settings.
  */
-void RedisHeartbeatManager::Start(ConfigProvider provider)
+std::shared_ptr<RedisHeartbeatManager> RedisHeartbeatManager::Instance(
+    ConfigProvider provider)
 {
-  std::lock_guard<std::mutex> lock(managerMutex());
-  auto& manager = processManager();
-
-  if (!manager)
-  {
-    manager.reset(new RedisHeartbeatManager(std::move(provider)));
-  }
+  static const std::shared_ptr<RedisHeartbeatManager> instance(
+      new RedisHeartbeatManager(std::move(provider)));
+  return instance;
 }
 
 /**
@@ -200,33 +170,18 @@ void RedisHeartbeatManager::Start(ConfigProvider provider)
  * @param status Shared worker status to retain and refresh.
  * @throws std::invalid_argument if status is null.
  */
-void RedisHeartbeatManager::HeartbeatStart(
-    std::shared_ptr<RedisJobStatus> status)
+void RedisHeartbeatManager::HeartbeatStart()
 {
-  if (!status)
+  const auto status = RedisJobStatus::Instance();
+
+  std::lock_guard<std::mutex> lock(m_heartbeatMutex);
+
+  if (!m_heartbeatRunner)
   {
-    throw std::invalid_argument(
-        "HeartbeatStart requires a non-null RedisJobStatus");
-  }
-
-  // Ensure the runner uses the same injected TTL configuration as cleanup.
-  Start();
-
-  Config config;
-  {
-    std::lock_guard<std::mutex> managerLock(managerMutex());
-    config = processManager()->m_config;
-  }
-
-  std::lock_guard<std::mutex> lock(heartbeatRunnerMutex());
-  auto& runner = processHeartbeatRunner();
-
-  if (!runner)
-  {
-    runner.reset(new HeartbeatRunner(
-        std::move(status),
-        config.heartbeatTtlSeconds,
-        config.heartbeatRefreshIntervalSeconds));
+    m_heartbeatRunner.reset(new HeartbeatRunner(
+        status,
+        m_config.heartbeatTtlSeconds,
+        m_config.heartbeatRefreshIntervalSeconds));
   }
 }
 
