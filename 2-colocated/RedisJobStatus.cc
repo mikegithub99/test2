@@ -317,6 +317,13 @@ RedisJobStatus::RedisJobStatus(ConfigProvider provider)
   }
 }
 
+std::shared_ptr<RedisJobStatus> RedisJobStatus::Instance(ConfigProvider provider)
+{
+  static const std::shared_ptr<RedisJobStatus> instance(
+      new RedisJobStatus(std::move(provider)));
+  return instance;
+}
+
 void RedisJobStatus::validateLifecycleIdentity(const string& jobId) const
 {
   validateIdentifier(m_serverType, "serverType", true);
