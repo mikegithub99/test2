@@ -24,8 +24,6 @@ using std::vector;
 
 namespace
 {
-constexpr auto kLeaseRenewInterval = std::chrono::seconds(5);
-
 /** @brief Returns the global Redis set containing registered server types. */
 string registryTypesKey()
 {
@@ -156,9 +154,11 @@ public:
    */
   HeartbeatRunner(
       std::shared_ptr<RedisJobStatus> status,
-      std::int64_t heartbeatTtlSeconds)
+      std::int64_t heartbeatTtlSeconds,
+      std::int64_t heartbeatRefreshIntervalSeconds)
       : m_status(std::move(status)),
         m_heartbeatTtlSeconds(heartbeatTtlSeconds),
+        m_heartbeatRefreshIntervalSeconds(heartbeatRefreshIntervalSeconds),
         m_thread(&HeartbeatRunner::run, this)
   {
   }
@@ -209,7 +209,7 @@ private:
       lock.lock();
       m_wakeup.wait_for(
           lock,
-          std::chrono::seconds(10),
+          std::chrono::seconds(m_heartbeatRefreshIntervalSeconds),
           [this]
           {
             return m_stopping;
@@ -219,6 +219,7 @@ private:
 
   std::shared_ptr<RedisJobStatus> m_status; ///< Retained worker status object.
   std::int64_t m_heartbeatTtlSeconds; ///< TTL supplied to heartbeat refreshes.
+  std::int64_t m_heartbeatRefreshIntervalSeconds; ///< Delay between heartbeat refreshes.
   std::mutex m_mutex; ///< Protects the runner shutdown flag.
   std::condition_variable m_wakeup; ///< Wakes the runner during shutdown.
   bool m_stopping = false; ///< True after shutdown is requested.
@@ -270,10 +271,13 @@ void RedisHeartbeatManager::Start(ConfigProvider provider)
   {
     const Config config = provider ? provider() : Config{};
     if (config.heartbeatTtlSeconds <= 0 ||
-        config.cleanupLeaseTtlMilliseconds <= 0)
+        config.heartbeatRefreshIntervalSeconds <= 0 ||
+        config.cleanupLeaseTtlMilliseconds <= 0 ||
+        config.cleanupLeaseRenewIntervalSeconds <= 0 ||
+        config.cleanupScanIntervalSeconds <= 0)
     {
       throw std::invalid_argument(
-          "RedisHeartbeatManager: configured TTL values must be positive");
+          "RedisHeartbeatManager: all configured durations must be positive");
     }
     manager.reset(new RedisHeartbeatManager(config));
   }
@@ -296,10 +300,10 @@ void RedisHeartbeatManager::HeartbeatStart(
   // Ensure the runner uses the same injected TTL configuration as cleanup.
   Start();
 
-  std::int64_t heartbeatTtlSeconds = 30;
+  Config config;
   {
     std::lock_guard<std::mutex> managerLock(managerMutex());
-    heartbeatTtlSeconds = processManager()->m_config.heartbeatTtlSeconds;
+    config = processManager()->m_config;
   }
 
   std::lock_guard<std::mutex> lock(heartbeatRunnerMutex());
@@ -307,7 +311,10 @@ void RedisHeartbeatManager::HeartbeatStart(
 
   if (!runner)
   {
-    runner.reset(new HeartbeatRunner(std::move(status), heartbeatTtlSeconds));
+    runner.reset(new HeartbeatRunner(
+        std::move(status),
+        config.heartbeatTtlSeconds,
+        config.heartbeatRefreshIntervalSeconds));
   }
 }
 
@@ -361,7 +368,7 @@ void RedisHeartbeatManager::cleanupLoop()
     lock.lock();
     m_wakeup.wait_for(
         lock,
-        m_scanInterval,
+        std::chrono::seconds(m_config.cleanupScanIntervalSeconds),
         [this]
         {
           return m_stopping;
@@ -406,7 +413,7 @@ void RedisHeartbeatManager::scanOnce()
         {
           const auto now = std::chrono::steady_clock::now();
 
-          if (now - lastRenewal < kLeaseRenewInterval)
+          if (now - lastRenewal <\n              std::chrono::seconds(m_config.cleanupLeaseRenewIntervalSeconds))
           {
             return;
           }
