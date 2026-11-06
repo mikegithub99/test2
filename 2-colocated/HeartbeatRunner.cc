@@ -24,8 +24,7 @@ HeartbeatRunner::HeartbeatRunner(
     std::int64_t heartbeatRefreshIntervalSeconds)
     : m_status(std::move(status)),
       m_heartbeatTtlSeconds(heartbeatTtlSeconds),
-      m_heartbeatRefreshIntervalSeconds(heartbeatRefreshIntervalSeconds),
-      m_thread(&HeartbeatRunner::run, this)
+      m_heartbeatRefreshIntervalSeconds(heartbeatRefreshIntervalSeconds)
 {
   if (!m_status)
   {
@@ -36,6 +35,8 @@ HeartbeatRunner::HeartbeatRunner(
   {
     throw std::invalid_argument("HeartbeatRunner durations must be positive");
   }
+
+  m_thread = std::thread(&HeartbeatRunner::run, this);
 }
 
 /** @brief Requests shutdown and joins the heartbeat thread. */
