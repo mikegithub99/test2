@@ -17,6 +17,7 @@
 #include "RedisClient.h"
 
 class RedisJobStatus;
+class HeartbeatRunner;
 
 /**
  * @class RedisHeartbeatManager
@@ -50,27 +51,20 @@ public:
   using ConfigProvider = std::function<Config()>;
 
   /**
-   * @brief Starts the process-wide cleanup manager.
-   *
-   * The provider is evaluated by the manager constructor. An empty provider
-   * uses default configuration. Repeated calls do not create additional threads.
-   * Call Start(provider) before HeartbeatStart() to inject custom settings.
-   *
-   * @param provider Optional source of all manager timing settings.
-   * @throws std::invalid_argument if a configured duration is not positive.
+   * @brief Gets the process-wide manager, initializing it lazily.
+   * @param provider Optional timing configuration provider. A supplied
+   *        provider must be passed on the first call only.
    */
-  static void Start(ConfigProvider provider = {});
+  static std::shared_ptr<RedisHeartbeatManager> Instance(ConfigProvider provider = {});
 
   /**
-   * @brief Starts the process-wide worker heartbeat publisher.
+   * @brief Starts the heartbeat publisher using the RedisJobStatus singleton.
    *
    * The first call starts the publisher; subsequent calls are ignored.
-   * The publisher refreshes immediately and then periodically.
-   *
-   * @param status Shared worker status whose heartbeat is refreshed.
-   * @throws std::invalid_argument if status is null.
+   * RedisJobStatus::Instance() must be configured before this call when
+   * custom status configuration is required.
    */
-  static void HeartbeatStart(std::shared_ptr<RedisJobStatus> status);
+  void HeartbeatStart();
 
   /** @brief Prevents copying the process manager. */
   RedisHeartbeatManager(const RedisHeartbeatManager&) = delete;
@@ -93,7 +87,7 @@ public:
   void stop();
 
 private:
-  /** @brief Constructs the manager, loads its configuration, and starts cleanup. */
+  /** @brief Constructs the singleton, loads its configuration, and starts cleanup. */
   explicit RedisHeartbeatManager(ConfigProvider provider);
 
   /** @brief Runs cleanup scans until shutdown is requested. */
@@ -105,6 +99,8 @@ private:
   std::condition_variable m_wakeup; ///< Wakes the cleanup loop during shutdown.
   bool m_stopping = false; ///< True after cleanup shutdown is requested.
   std::thread m_cleanupThread; ///< Background distributed cleanup thread.
+  std::mutex m_heartbeatMutex; ///< Protects heartbeat-runner initialization.
+  std::unique_ptr<HeartbeatRunner> m_heartbeatRunner; ///< Worker heartbeat publisher.
 };
 
 #endif // REDIS_HEARTBEAT_MANAGER_H
