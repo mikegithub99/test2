@@ -134,7 +134,9 @@ bool isReservedJobMetadataField(const string& field)
   for (const char* reserved : kReservedJobMetadataFields)
   {
     if (field == reserved)
+    {
       return true;
+    }
   }
   return false;
 }
@@ -159,8 +161,9 @@ void appendMetadataArgs(
   for (const auto& item : metadata)
   {
     if (!includeField(item.first))
+    {
       continue;
-
+    }
     args.push_back(item.first);
     args.push_back(item.second);
     ++count;
@@ -193,17 +196,25 @@ map<string, int64_t> countersFromSnapshot(
     const vector<string>& flat, std::size_t offset, std::size_t fieldCount)
 {
   if (flat.size() < offset + fieldCount * 2)
+  {
     throw runtime_error("RedisJobStatus: malformed summary snapshot");
+  }
   map<string, int64_t> counters;
   for (std::size_t i = 0; i < fieldCount; ++i)
   {
     const auto& name = flat[offset + i * 2];
     const auto& value = flat[offset + i * 2 + 1];
-    if (name.rfind("meta:", 0) == 0) continue;
+    if (name.rfind("meta:", 0) == 0)
+    {
+      continue;
+    }
     try {
       std::size_t used = 0;
       const auto parsed = stoll(value, &used);
-      if (used != value.size()) throw invalid_argument("trailing data");
+      if (used != value.size())
+      {
+        throw invalid_argument("trailing data");
+      }
       counters[name] = parsed;
     } catch (const exception&) {
       throw runtime_error("RedisJobStatus: non-integer counter '" + name + "'");
@@ -343,7 +354,9 @@ RedisJobStatus::Result RedisJobStatus::createPendingJob(
   for (const auto& item : metadata)
   {
     if (item.first.empty())
+    {
       throw invalid_argument("RedisJobStatus: job metadata field must not be empty");
+    }
   }
 
   const string reference = jobReference(m_serverId, jobId);
@@ -364,9 +377,15 @@ RedisJobStatus::Result RedisJobStatus::transitionJob(
     const string& jobId,
     State newState)
 {
-  if (!m_enabled) return Result::Disabled;
+  if (!m_enabled)
+  {
+    return Result::Disabled;
+  }
   validateLifecycleIdentity(jobId);
-  if (newState == State::Pending) return Result::InvalidTransition;
+  if (newState == State::Pending)
+  {
+    return Result::InvalidTransition;
+  }
   const string reference = jobReference(m_serverId, jobId);
   const string newStateName = stateName(newState);
   const KeyList keys = lifecycleKeys(jobId, m_serverType, m_serverId);
@@ -380,7 +399,10 @@ RedisJobStatus::Result RedisJobStatus::transitionJob(
 
 RedisJobStatus::Result RedisJobStatus::completeJob(const string& jobId)
 {
-  if (!m_enabled) return Result::Disabled;
+  if (!m_enabled)
+  {
+    return Result::Disabled;
+  }
   validateLifecycleIdentity(jobId);
   const string reference = jobReference(m_serverId, jobId);
   const KeyList keys = lifecycleKeys(jobId, m_serverType, m_serverId);
@@ -402,12 +424,16 @@ void RedisJobStatus::registerServer(
   for (const auto& item : serverTypeMetadata)
   {
     if (item.first.empty() || isReservedServerTypeMetadataField(item.first))
+    {
       throw invalid_argument("RedisJobStatus: empty or reserved server-type metadata field");
+    }
   }
   for (const auto& item : serverMetadata)
   {
     if (item.first.empty())
+    {
       throw invalid_argument("RedisJobStatus: server metadata field must not be empty");
+    }
   }
   const KeyList keys = {kServerTypesKey, serverRegistryKey(m_serverType)};
   const ArgList args = {m_serverType, m_serverId};
@@ -530,7 +556,10 @@ map<string, int64_t> RedisJobStatus::getTypeSummary(
 vector<RedisJobStatus::ServerSummary>
 RedisJobStatus::getServerSummaries(const string& serverType)
 {
-  if (!m_enabled) return {};
+  if (!m_enabled)
+  {
+    return {};
+  }
   validateIdentifier(serverType, "serverType", true);
   return m_client->execute([&](auto& redis)
   {
@@ -541,14 +570,20 @@ RedisJobStatus::getServerSummaries(const string& serverType)
     for (const auto& id : ids)
       keys.push_back(serverSummaryKey(serverType, id));
     const auto flat = evalStrings(redis, kReadServerSummariesSnapshotScript, keys, args);
-    if (flat.empty()) throw runtime_error("RedisJobStatus: empty summary snapshot");
+    if (flat.empty())
+    {
+      throw runtime_error("RedisJobStatus: empty summary snapshot");
+    }
     std::size_t cursor = 0;
     const auto count = static_cast<std::size_t>(stoull(flat[cursor++]));
     vector<ServerSummary> summaries;
     summaries.reserve(count);
     for (std::size_t i = 0; i < count; ++i)
     {
-      if (cursor + 2 > flat.size()) throw runtime_error("RedisJobStatus: malformed summary record");
+      if (cursor + 2 > flat.size())
+      {
+        throw runtime_error("RedisJobStatus: malformed summary record");
+      }
       ServerSummary summary;
       summary.serverId = flat[cursor++];
       const auto fields = static_cast<std::size_t>(stoull(flat[cursor++]));
@@ -556,7 +591,10 @@ RedisJobStatus::getServerSummaries(const string& serverType)
       cursor += fields * 2;
       summaries.push_back(std::move(summary));
     }
-    if (cursor != flat.size()) throw runtime_error("RedisJobStatus: trailing summary snapshot data");
+    if (cursor != flat.size())
+    {
+      throw runtime_error("RedisJobStatus: trailing summary snapshot data");
+    }
     return summaries;
   });
 }
@@ -564,7 +602,10 @@ RedisJobStatus::getServerSummaries(const string& serverType)
 vector<RedisJobStatus::Job> RedisJobStatus::getServerJobs(
     const string& serverType, const string& serverId)
 {
-  if (!m_enabled) return {};
+  if (!m_enabled)
+  {
+    return {};
+  }
   validateIdentifier(serverType, "serverType", true);
   validateIdentifier(serverId, "serverId");
   const string indexKey = serverJobsKey(serverType, serverId);
@@ -578,17 +619,26 @@ vector<RedisJobStatus::Job> RedisJobStatus::getServerJobs(
     ArgList args = {to_string(refs.size())};
     args.insert(args.end(), refs.begin(), refs.end());
     const auto flat = evalStrings(redis, kReadServerJobsSnapshotScript, keys, args);
-    if (flat.empty()) throw runtime_error("RedisJobStatus: empty job snapshot");
+    if (flat.empty())
+    {
+      throw runtime_error("RedisJobStatus: empty job snapshot");
+    }
     std::size_t cursor = 0;
     const auto count = static_cast<std::size_t>(stoull(flat[cursor++]));
     vector<Job> jobs;
     jobs.reserve(count);
     for (std::size_t i = 0; i < count; ++i)
     {
-      if (cursor + 2 > flat.size()) throw runtime_error("RedisJobStatus: malformed job record");
+      if (cursor + 2 > flat.size())
+      {
+        throw runtime_error("RedisJobStatus: malformed job record");
+      }
       const string reference = flat[cursor++];
       const auto fields = static_cast<std::size_t>(stoull(flat[cursor++]));
-      if (flat.size() < cursor + fields * 2) throw runtime_error("RedisJobStatus: truncated job record");
+      if (flat.size() < cursor + fields * 2)
+      {
+        throw runtime_error("RedisJobStatus: truncated job record");
+      }
       Job job;
       for (std::size_t j = 0; j < fields; ++j)
       {
@@ -601,10 +651,15 @@ vector<RedisJobStatus::Job> RedisJobStatus::getServerJobs(
         else job.fields[name] = value;
       }
       if (job.serverType != serverType || job.serverId != serverId)
+      {
         throw runtime_error("RedisJobStatus: foreign job reference in index: " + reference);
+      }
       jobs.push_back(std::move(job));
     }
-    if (cursor != flat.size()) throw runtime_error("RedisJobStatus: trailing job snapshot data");
+    if (cursor != flat.size())
+    {
+      throw runtime_error("RedisJobStatus: trailing job snapshot data");
+    }
     return jobs;
   });
 }
