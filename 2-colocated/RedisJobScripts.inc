@@ -290,7 +290,8 @@ return RESULT_OK
  * @brief Initializes server-type metadata without overwriting existing values.
  *
  * KEYS[1] is the type summary hash. ARGV[1] is the UTC creation timestamp,
- * ARGV[2] is metadata pair count, and remaining args are field/value pairs.
+ * ARGV[2] is the server ID that first created the type, ARGV[3] is metadata
+ * pair count, and remaining args are field/value pairs.
  */
 const char* const kInitializeTypeSummaryMetadataScript = R"lua(
 local summaryKey = KEYS[1]
@@ -299,8 +300,9 @@ if keyType ~= 'none' and keyType ~= 'hash' then
   return redis.error_reply('wrong key type')
 end
 redis.call('HSETNX', summaryKey, 'meta:createdAt', ARGV[1])
-local count = tonumber(ARGV[2])
-local cursor = 3
+redis.call('HSETNX', summaryKey, 'meta:createdByServerId', ARGV[2])
+local count = tonumber(ARGV[3])
+local cursor = 4
 for i = 1, count do
   redis.call('HSET', summaryKey, 'meta:' .. ARGV[cursor], ARGV[cursor + 1])
   cursor = cursor + 2
