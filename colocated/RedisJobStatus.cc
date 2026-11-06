@@ -1,0 +1,579 @@
+/**
+ * @file RedisJobStatus.cc
+ * @brief Implementation of logical Redis job-status APIs.
+ */
+
+#include <cstddef>
+#include <cstdint>
+#include <map>
+#include <string>
+#include <vector>
+
+#include <algorithm>
+#include <cctype>
+#include <ctime>
+#include <iomanip>
+#include <iterator>
+#include <sstream>
+#include <stdexcept>
+#include <utility>
+
+#include "RedisJobStatus.h"
+
+using std::back_inserter;
+using std::tolower;
+using std::transform;
+using std::exception;
+using std::int64_t;
+using std::invalid_argument;
+using std::map;
+using std::pair;
+using std::runtime_error;
+using std::stoll;
+using std::string;
+using std::to_string;
+using std::vector;
+
+// The host application provides this registry lookup.
+string get_reg_val(const string& key);
+
+namespace
+{
+#include "RedisJobScripts.inc"
+
+
+string jobReference(const string& serverId, const string& jobId)
+{
+  return to_string(serverId.size()) + ":" + serverId + ":" + jobId;
+}
+
+string jobKey(const string& serverType, const string& serverId, const string& jobId)
+{
+  return "job:{" + serverType + "}:" + jobReference(serverId, jobId);
+}
+
+string typeJobsKey(const string& serverType)
+{
+  return "jobs:type:{" + serverType + "}";
+}
+
+string serverJobsKey(
+    const string& serverType,
+    const string& serverId)
+{
+  return "jobs:server:{" + serverType + "}:" + serverId;
+}
+
+string typeSummaryKey(const string& serverType)
+{
+  return "summary:type:{" + serverType + "}";
+}
+
+string serverSummaryKey(
+    const string& serverType,
+    const string& serverId)
+{
+  return "summary:server:{" + serverType + "}:" + serverId;
+}
+
+string serverRegistryKey(const string& serverType)
+{
+  return "servers:{registry}:type:" + serverType;
+}
+
+const string kServerTypesKey = "servers:{registry}:types";
+
+string heartbeatKey(
+    const string& serverType,
+    const string& serverId)
+{
+  return "heartbeat:server:{" + serverType + "}:" + serverId;
+}
+
+string liveServersKey(const string& serverType)
+{
+  return "servers:live:{" + serverType + "}";
+}
+
+string serverStateKey(const string& serverType)
+{
+  return "servers:state:{" + serverType + "}";
+}
+
+using KeyList = vector<string>;
+using ArgList = vector<string>;
+
+KeyList lifecycleKeys(
+    const string& jobId,
+    const string& serverType,
+    const string& serverId)
+{
+  return {
+      jobKey(serverType, serverId, jobId),
+      typeJobsKey(serverType),
+      serverJobsKey(serverType, serverId),
+      typeSummaryKey(serverType),
+      serverSummaryKey(serverType, serverId),
+      serverStateKey(serverType)};
+}
+
+// Job hash fields owned by RedisJobStatus rather than caller metadata.
+constexpr const char* kJobIdField = "jobId";
+constexpr const char* kStatusField = "status";
+constexpr const char* kServerTypeField = "serverType";
+constexpr const char* kServerIdField = "serverId";
+constexpr const char* kReservedJobMetadataFields[] = {
+    kJobIdField, kStatusField, kServerTypeField, kServerIdField};
+
+// Type-summary metadata initialized once; server identity is not duplicated.
+constexpr const char* kCreatedAtMetadataField = "createdAt";
+
+bool isReservedJobMetadataField(const string& field)
+{
+  for (const char* reserved : kReservedJobMetadataFields)
+  {
+    if (field == reserved)
+      return true;
+  }
+  return false;
+}
+
+bool isReservedServerTypeMetadataField(const string& field)
+{
+  return field == kCreatedAtMetadataField;
+}
+
+// Append a count followed by accepted field/value pairs. The predicate keeps
+// metadata policy at the call site while this helper owns the Lua wire format.
+template <typename IncludeField>
+void appendMetadataArgs(
+    ArgList& args,
+    const map<string, string>& metadata,
+    IncludeField includeField)
+{
+  const auto countIndex = args.size();
+  args.push_back("0");
+
+  std::size_t count = 0;
+  for (const auto& item : metadata)
+  {
+    if (!includeField(item.first))
+      continue;
+
+    args.push_back(item.first);
+    args.push_back(item.second);
+    ++count;
+  }
+
+  args[countIndex] = to_string(count);
+}
+
+template <typename Redis>
+int64_t evalResult(
+    Redis& redis,
+    const string& script,
+    const KeyList& keys,
+    const ArgList& args)
+{
+  return redis.template eval<int64_t>(
+      script, keys.begin(), keys.end(), args.begin(), args.end());
+}
+
+template <typename Redis>
+map<string, int64_t> readCounters(
+    Redis& redis,
+    const string& key)
+{
+  vector<pair<string, string>> fields;
+  redis.hgetall(key, back_inserter(fields));
+
+  map<string, int64_t> counters;
+  for (const auto& field : fields)
+  {
+    // Summary hashes also contain descriptive metadata; only numeric fields
+    // belong in the counters API.
+    if (field.first.rfind("meta:", 0) == 0)
+    {
+      continue;
+    }
+    try
+    {
+      counters[field.first] = stoll(field.second);
+    }
+    catch (const exception&)
+    {
+      throw runtime_error(
+          "RedisJobStatus: non-integer counter '" + field.first + "'");
+    }
+  }
+  return counters;
+}
+
+template <typename Redis>
+RedisJobStatus::Job readJob(Redis& redis, const string& key)
+{
+  vector<pair<string, string>> fields;
+  redis.hgetall(key, back_inserter(fields));
+
+  RedisJobStatus::Job job;
+  for (const auto& field : fields)
+  {
+    if (field.first == kJobIdField)
+    {
+      job.jobId = field.second;
+    }
+    else if (field.first == kStatusField)
+    {
+      job.status = field.second;
+    }
+    else if (field.first == kServerTypeField)
+    {
+      job.serverType = field.second;
+    }
+    else if (field.first == kServerIdField)
+    {
+      job.serverId = field.second;
+    }
+    else
+    {
+      job.fields[field.first] = field.second;
+    }
+  }
+  return job;
+}
+bool parseEnabledFlag(const string& value)
+{
+  string normalized = value;
+  transform(normalized.begin(), normalized.end(), normalized.begin(),
+            [](unsigned char ch)
+            {
+              return static_cast<char>(tolower(ch));
+            });
+
+  if (normalized.empty() || normalized == "true" || normalized == "1" || normalized == "yes")
+  {
+    return true;
+  }
+  if (normalized == "false" || normalized == "0" || normalized == "no")
+  {
+    return false;
+  }
+  throw invalid_argument(
+      "RedisJobStatus: redisJobStatusEnabled must be true/false, 1/0, or yes/no");
+}
+
+RedisJobStatus::Config defaultConfig()
+{
+  RedisJobStatus::Config config;
+  config.enabled = parseEnabledFlag(get_reg_val("redisJobStatusEnabled"));
+  config.serverType = get_reg_val("redisJobStatusServerType");
+  config.serverId = get_reg_val("redisJobStatusServerId");
+  return config;
+}
+} // namespace
+
+RedisJobStatus::RedisJobStatus(ConfigProvider provider)
+{
+  const Config config = provider ? provider() : defaultConfig();
+  m_enabled = config.enabled;
+  m_serverType = config.serverType;
+  m_serverId = config.serverId;
+  if (m_enabled)
+  {
+    m_client = RedisClient::Instance();
+  }
+}
+
+void RedisJobStatus::validateLifecycleIdentity(const string& jobId) const
+{
+  validateIdentifier(m_serverType, "serverType", true);
+  validateIdentifier(m_serverId, "serverId");
+  validateIdentifier(jobId, "jobId");
+}
+
+RedisJobStatus::Result RedisJobStatus::createPendingJob(
+    const string& jobId,
+    const map<string, string>& metadata)
+{
+  if (!m_enabled)
+  {
+    return Result::Disabled;
+  }
+  validateLifecycleIdentity(jobId);
+  for (const auto& item : metadata)
+  {
+    if (item.first.empty())
+      throw invalid_argument("RedisJobStatus: job metadata field must not be empty");
+  }
+
+  const string reference = jobReference(m_serverId, jobId);
+  const KeyList keys = lifecycleKeys(jobId, m_serverType, m_serverId);
+  ArgList args = {jobId, m_serverType, m_serverId, reference};
+  appendMetadataArgs(args, metadata, [](const string& field)
+  {
+    return !isReservedJobMetadataField(field);
+  });
+  const auto result = m_client->execute([&](auto& redis)
+  {
+    return evalResult(redis, kCreatePendingScript, keys, args);
+  });
+  return static_cast<Result>(result);
+}
+
+RedisJobStatus::Result RedisJobStatus::transitionJob(
+    const string& jobId,
+    State newState)
+{
+  if (!m_enabled) return Result::Disabled;
+  validateLifecycleIdentity(jobId);
+  if (newState == State::Pending) return Result::InvalidTransition;
+  const string reference = jobReference(m_serverId, jobId);
+  const string newStateName = stateName(newState);
+  const KeyList keys = lifecycleKeys(jobId, m_serverType, m_serverId);
+  ArgList args = {jobId, m_serverType, m_serverId, newStateName, reference};
+  const auto result = m_client->execute([&](auto& redis)
+  {
+    return evalResult(redis, kTransitionScript, keys, args);
+  });
+  return static_cast<Result>(result);
+}
+
+RedisJobStatus::Result RedisJobStatus::completeJob(const string& jobId)
+{
+  if (!m_enabled) return Result::Disabled;
+  validateLifecycleIdentity(jobId);
+  const string reference = jobReference(m_serverId, jobId);
+  const KeyList keys = lifecycleKeys(jobId, m_serverType, m_serverId);
+  ArgList args = {jobId, m_serverType, m_serverId, reference};
+  const auto result = m_client->execute([&](auto& redis)
+  {
+    return evalResult(redis, kCompleteScript, keys, args);
+  });
+  return static_cast<Result>(result);
+}
+
+void RedisJobStatus::registerServer(
+    const map<string, string>& serverTypeMetadata,
+    const map<string, string>& serverMetadata)
+{
+  if (!m_enabled) return;
+  validateIdentifier(m_serverType, "serverType", true);
+  validateIdentifier(m_serverId, "serverId");
+  for (const auto& item : serverTypeMetadata)
+  {
+    if (item.first.empty() || isReservedServerTypeMetadataField(item.first))
+      throw invalid_argument("RedisJobStatus: empty or reserved server-type metadata field");
+  }
+  for (const auto& item : serverMetadata)
+  {
+    if (item.first.empty())
+      throw invalid_argument("RedisJobStatus: server metadata field must not be empty");
+  }
+  const KeyList keys = {kServerTypesKey, serverRegistryKey(m_serverType)};
+  const ArgList args = {m_serverType, m_serverId};
+
+  // Establish the per-type lifecycle state first. A DELETING or otherwise
+  // terminal identity is never reactivated; process IDs are never reused.
+  const KeyList stateKeys = {serverStateKey(m_serverType)};
+  const ArgList stateArgs = {m_serverId};
+  const auto activation = m_client->execute([&](auto& redis)
+  {
+    return evalResult(redis, kActivateServerScript, stateKeys, stateArgs);
+  });
+  if (activation != 1)
+  {
+    throw runtime_error("RedisJobStatus: serverId is already fenced and cannot be reactivated");
+  }
+
+  // Both registry keys share the {registry} hash tag, so one script can
+  // update them atomically in standalone Redis and Redis Cluster.
+  m_client->execute(
+      [&](auto& redis)
+      {
+        return evalResult(redis, kRegisterServerScript, keys, args);
+      });
+
+  // Initialize type metadata independently: the registry keys use the
+  // {registry} hash tag, while this summary key uses {serverType}. Keeping
+  // these as separate operations is required for Redis Cluster compatibility.
+  const auto now = std::time(nullptr);
+  const std::tm* utc = std::gmtime(&now);
+  if (!utc)
+  {
+    throw runtime_error("RedisJobStatus: unable to generate metadata timestamp");
+  }
+  std::ostringstream timestamp;
+  timestamp << std::put_time(utc, "%Y-%m-%dT%H:%M:%SZ");
+  const KeyList summaryKeys = {typeSummaryKey(m_serverType)};
+  ArgList summaryArgs = {timestamp.str()};
+  appendMetadataArgs(summaryArgs, serverTypeMetadata,
+                     [](const string&) { return true; });
+  m_client->execute(
+      [&](auto& redis)
+      {
+        return evalResult(
+            redis, kInitializeTypeSummaryMetadataScript, summaryKeys, summaryArgs);
+      });
+
+  const KeyList serverKeys = {serverSummaryKey(m_serverType, m_serverId)};
+  ArgList serverArgs;
+  appendMetadataArgs(serverArgs, serverMetadata,
+                     [](const string&) { return true; });
+  m_client->execute(
+      [&](auto& redis)
+      {
+        return evalResult(
+            redis, kSetServerSummaryMetadataScript, serverKeys, serverArgs);
+      });
+
+  // Heartbeat publication is deliberately not started here. The worker
+  // process owns its refresh schedule and calls refreshHeartbeat() explicitly.
+}
+
+vector<string> RedisJobStatus::getServerTypes()
+{
+  if (!m_enabled)
+  {
+    return {};
+  }
+  return m_client->execute(
+      [&](auto& redis)
+      {
+        vector<string> serverTypes;
+        redis.smembers(kServerTypesKey, back_inserter(serverTypes));
+        return serverTypes;
+      });
+}
+
+void RedisJobStatus::refreshHeartbeat(int64_t ttlSeconds)
+{
+  if (!m_enabled) return;
+  validateIdentifier(m_serverType, "serverType", true);
+  validateIdentifier(m_serverId, "serverId");
+  if (ttlSeconds <= 0)
+  {
+    throw invalid_argument(
+        "RedisJobStatus: heartbeat TTL must be positive");
+  }
+
+  const KeyList keys = {
+      heartbeatKey(m_serverType, m_serverId),
+      liveServersKey(m_serverType),
+      serverStateKey(m_serverType)};
+  const ArgList args = {m_serverId, to_string(ttlSeconds)};
+  const auto refreshed = m_client->execute([&](auto& redis)
+  {
+    return evalResult(redis, kRefreshHeartbeatScript, keys, args);
+  });
+  if (refreshed != 1)
+  {
+    throw runtime_error("RedisJobStatus: heartbeat rejected because server is not ACTIVE");
+  }
+}
+
+map<string, int64_t> RedisJobStatus::getTypeSummary(
+    const string& serverType)
+{
+  if (!m_enabled)
+  {
+    return {};
+  }
+  validateIdentifier(serverType, "serverType", true);
+  const auto key = typeSummaryKey(serverType);
+  return m_client->execute(
+      [&](auto& redis)
+      {
+        return readCounters(redis, key);
+      });
+}
+
+vector<RedisJobStatus::ServerSummary>
+RedisJobStatus::getServerSummaries(const string& serverType)
+{
+  if (!m_enabled)
+  {
+    return {};
+  }
+  validateIdentifier(serverType, "serverType", true);
+  const auto registryKey = serverRegistryKey(serverType);
+
+  return m_client->execute(
+      [&](auto& redis)
+      {
+        vector<string> serverIds;
+        redis.smembers(registryKey, back_inserter(serverIds));
+
+        vector<ServerSummary> summaries;
+        summaries.reserve(serverIds.size());
+        for (const auto& serverId : serverIds)
+        {
+          summaries.push_back(
+              ServerSummary{serverId,
+                            readCounters(
+                                redis,
+                                serverSummaryKey(serverType, serverId))});
+        }
+        return summaries;
+      });
+}
+
+vector<RedisJobStatus::Job> RedisJobStatus::getServerJobs(
+    const string& serverType,
+    const string& serverId)
+{
+  if (!m_enabled)
+  {
+    return {};
+  }
+  validateIdentifier(serverType, "serverType", true);
+  validateIdentifier(serverId, "serverId");
+  const auto indexKey = serverJobsKey(serverType, serverId);
+
+  return m_client->execute(
+      [&](auto& redis)
+      {
+        vector<string> jobIds;
+        redis.smembers(indexKey, back_inserter(jobIds));
+
+        vector<Job> jobs;
+        jobs.reserve(jobIds.size());
+        for (const auto& reference : jobIds)
+        {
+          jobs.push_back(readJob(redis, "job:{" + serverType + "}:" + reference));
+        }
+        return jobs;
+      });
+}
+
+string RedisJobStatus::stateName(State state)
+{
+  switch (state)
+  {
+    case State::Pending:
+      return "PENDING";
+    case State::Active:
+      return "ACTIVE";
+    case State::Suspended:
+      return "SUSPENDED";
+  }
+  throw invalid_argument("RedisJobStatus: unknown state");
+}
+
+void RedisJobStatus::validateIdentifier(
+    const string& value,
+    const char* name,
+    bool isServerType)
+{
+  if (value.empty())
+  {
+    throw invalid_argument(
+        string("RedisJobStatus: ") + name + " must not be empty");
+  }
+  if (isServerType &&
+      (value.find('{') != string::npos ||
+       value.find('}') != string::npos))
+  {
+    throw invalid_argument(
+        "RedisJobStatus: serverType must not contain '{' or '}'");
+  }
+}
