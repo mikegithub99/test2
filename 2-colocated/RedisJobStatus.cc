@@ -128,6 +128,7 @@ constexpr const char* kReservedJobMetadataFields[] = {
 
 // Type-summary metadata initialized once; server identity is not duplicated.
 constexpr const char* kCreatedAtMetadataField = "createdAt";
+constexpr const char* kCreatedByServerIdMetadataField = "createdByServerId";
 
 bool isReservedJobMetadataField(const string& field)
 {
@@ -143,7 +144,8 @@ bool isReservedJobMetadataField(const string& field)
 
 bool isReservedServerTypeMetadataField(const string& field)
 {
-  return field == kCreatedAtMetadataField;
+  return field == kCreatedAtMetadataField ||
+         field == kCreatedByServerIdMetadataField;
 }
 
 // Append a count followed by accepted field/value pairs. The predicate keeps
@@ -474,7 +476,7 @@ void RedisJobStatus::registerServer(
   std::ostringstream timestamp;
   timestamp << std::put_time(utc, "%Y-%m-%dT%H:%M:%SZ");
   const KeyList summaryKeys = {typeSummaryKey(m_serverType)};
-  ArgList summaryArgs = {timestamp.str()};
+  ArgList summaryArgs = {timestamp.str(), m_serverId};
   appendMetadataArgs(summaryArgs, serverTypeMetadata,
                      [](const string&) { return true; });
   m_client->execute(
