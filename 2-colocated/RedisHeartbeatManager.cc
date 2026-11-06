@@ -1,4 +1,5 @@
 #include "RedisHeartbeatManager.h"
+#include "RedisJobStatus.h"
 #include <cstdint>
 #include <iostream>
 #include <iterator>
@@ -44,6 +45,71 @@ int64_t evalScript(Redis& redis, const char* script,
   return redis.template eval<int64_t>(script, keys.begin(), keys.end(), args.begin(), args.end());
 }
 } // namespace
+class HeartbeatRunner final
+{
+public:
+  explicit HeartbeatRunner(std::shared_ptr<RedisJobStatus> status)
+      : m_status(std::move(status)),
+        m_thread(&HeartbeatRunner::run, this)
+  {
+  }
+
+  ~HeartbeatRunner()
+  {
+    {
+      std::lock_guard<std::mutex> lock(m_mutex);
+      m_stopping = true;
+    }
+    m_wakeup.notify_all();
+    if (m_thread.joinable()) m_thread.join();
+  }
+
+private:
+  void run()
+  {
+    std::unique_lock<std::mutex> lock(m_mutex);
+    while (!m_stopping)
+    {
+      lock.unlock();
+      try
+      {
+        m_status->refreshHeartbeat(30);
+      }
+      catch (const std::exception& e)
+      {
+        std::cerr << "HeartbeatStart: heartbeat refresh failed: "
+                  << e.what() << '\n';
+      }
+      catch (...)
+      {
+        std::cerr << "HeartbeatStart: heartbeat refresh failed: unknown exception\n";
+      }
+      lock.lock();
+      m_wakeup.wait_for(lock, std::chrono::seconds(10),
+                        [this] { return m_stopping; });
+    }
+  }
+
+  std::shared_ptr<RedisJobStatus> m_status;
+  std::mutex m_mutex;
+  std::condition_variable m_wakeup;
+  bool m_stopping = false;
+  std::thread m_thread;
+};
+
+namespace {
+std::mutex& heartbeatRunnerMutex()
+{
+  static std::mutex value;
+  return value;
+}
+std::unique_ptr<HeartbeatRunner>& processHeartbeatRunner()
+{
+  static std::unique_ptr<HeartbeatRunner> value;
+  return value;
+}
+} // namespace
+
 RedisHeartbeatManager::RedisHeartbeatManager() : m_client(RedisClient::Instance())
 { m_cleanupThread = std::thread(&RedisHeartbeatManager::cleanupLoop, this); }
 RedisHeartbeatManager::~RedisHeartbeatManager() { stop(); }
@@ -53,6 +119,15 @@ void RedisHeartbeatManager::Start()
   auto& manager = processManager();
   if (!manager) manager.reset(new RedisHeartbeatManager());
 }
+void RedisHeartbeatManager::HeartbeatStart(std::shared_ptr<RedisJobStatus> status)
+{
+  if (!status)
+    throw std::invalid_argument("HeartbeatStart requires a non-null RedisJobStatus");
+  std::lock_guard<std::mutex> lock(heartbeatRunnerMutex());
+  auto& runner = processHeartbeatRunner();
+  if (!runner) runner.reset(new HeartbeatRunner(std::move(status)));
+}
+
 void RedisHeartbeatManager::stop()
 {
   { std::lock_guard<std::mutex> lock(m_mutex); m_stopping = true; }
