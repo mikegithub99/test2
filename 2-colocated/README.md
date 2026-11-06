@@ -46,6 +46,31 @@ RedisHeartbeatManager::HeartbeatStart(status);
 
 The `RedisJobStatus` object must be shared with `HeartbeatStart()` and remain available to application code. Use the same object for job lifecycle operations. The background heartbeat thread catches and logs refresh errors and continues retrying on the next interval. The worker's normal event/work loop runs independently. At process shutdown, the static runner stops and joins its thread.
 
+## TTLs and timing configuration
+
+There are **two Redis keys with expiration (TTL) in this implementation**. They serve different purposes and must be configured independently:
+
+| TTL | Redis key | Current value | What it controls | Where to change it |
+|---|---|---:|---|---|
+| Worker heartbeat TTL | `heartbeat:server:{<serverType>}:<serverId>` | 30 seconds | How long a worker's last heartbeat remains present after its most recent successful refresh. When it expires, the cleanup scanner may fence the worker. | The `refreshHeartbeat(30)` call in `HeartbeatRunner::run()` in `RedisHeartbeatManager.cc`. |
+| Distributed cleanup-lease TTL | `servers:{registry}:cleanup-lease` | 30 seconds (30,000 ms) | How long the registry-scan ownership lease remains valid if its owner stops renewing it. This coordinates cleanup scanners; it is **not** a worker heartbeat. | `kLeaseTtlMs = 30000` near the top of `RedisHeartbeatManager.cc`. |
+
+The current related intervals are **not TTLs**:
+
+| Interval | Current value | Where to change it |
+|---|---:|---|
+| Worker heartbeat refresh interval | 10 seconds | The `std::chrono::seconds(10)` wait in `HeartbeatRunner::run()` in `RedisHeartbeatManager.cc`. |
+| Cleanup scan interval | 5 seconds | `kCleanupScanIntervalSeconds = 5` in `RedisHeartbeatManager.h`. |
+| Cleanup-lease renewal interval | 5 seconds | `kLeaseRenewInterval = std::chrono::seconds(5)` in `RedisHeartbeatManager.cc`. |
+
+**How to change the worker heartbeat:** change both its TTL argument and its refresh wait. For example, to use a 60-second heartbeat TTL refreshed every 15 seconds, change the call to `m_status->refreshHeartbeat(60)` and the wait to `std::chrono::seconds(15)`. Keep the refresh interval comfortably shorter than the TTL; 15/60 seconds gives a 4:1 TTL-to-refresh ratio. Manual calls to `status.refreshHeartbeat(ttlSeconds)` use the TTL passed to that call.
+
+**How to change the cleanup lease:** change `kLeaseTtlMs` in milliseconds (for example, `60000` for 60 seconds). Keep `kLeaseRenewInterval` comfortably shorter than the lease TTL; the current 5-second renewal interval is suitable for the current 30-second lease. The cleanup scan cadence is controlled separately by `kCleanupScanIntervalSeconds`.
+
+These values are currently **compile-time settings in the C++ source**, not host registry settings or runtime configuration. After changing them, rebuild and deploy the worker. The two TTLs do not need to be equal. A heartbeat TTL controls worker-liveness detection; the cleanup-lease TTL controls scanner coordination.
+
+**Important expiry behavior:** expiration of the worker heartbeat key does not itself change the worker's state. The cleanup scanner must run and execute the fencing script before lifecycle operations are rejected. Detection therefore also depends on the cleanup scan interval and Redis/network/scheduling delays.
+
 ## Public job-status API
 
 ```cpp
@@ -170,8 +195,6 @@ A crash between phases is recoverable: a later scan retries Phase B. Redis Lua i
 - `RedisJobScripts.inc` — embedded lifecycle, heartbeat, fencing, cleanup, lease, and snapshot Lua.
 - `RedisHeartbeatManager.h/.cc` — process-local cleanup and heartbeat thread entry points.
 - `heartbeat.cc` — worker startup integration example.
-- `HEARTBEAT_DESIGN.md` — detailed protocol and failure analysis.
-- `NEWIDEA.md` — implementation status and validation plan.
 
 ## Build and validation
 
