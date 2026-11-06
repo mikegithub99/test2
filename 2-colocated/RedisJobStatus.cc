@@ -418,7 +418,10 @@ void RedisJobStatus::registerServer(
     const map<string, string>& serverTypeMetadata,
     const map<string, string>& serverMetadata)
 {
-  if (!m_enabled) return;
+  if (!m_enabled)
+  {
+    return;
+  }
   validateIdentifier(m_serverType, "serverType", true);
   validateIdentifier(m_serverId, "serverId");
   for (const auto& item : serverTypeMetadata)
@@ -513,7 +516,10 @@ vector<string> RedisJobStatus::getServerTypes()
 
 void RedisJobStatus::refreshHeartbeat(int64_t ttlSeconds)
 {
-  if (!m_enabled) return;
+  if (!m_enabled)
+  {
+    return;
+  }
   validateIdentifier(m_serverType, "serverType", true);
   validateIdentifier(m_serverId, "serverId");
   if (ttlSeconds <= 0)
@@ -644,11 +650,26 @@ vector<RedisJobStatus::Job> RedisJobStatus::getServerJobs(
       {
         const auto& name = flat[cursor++];
         const auto& value = flat[cursor++];
-        if (name == kJobIdField) job.jobId = value;
-        else if (name == kStatusField) job.status = value;
-        else if (name == kServerTypeField) job.serverType = value;
-        else if (name == kServerIdField) job.serverId = value;
-        else job.fields[name] = value;
+        if (name == kJobIdField)
+        {
+          job.jobId = value;
+        }
+        else if (name == kStatusField)
+        {
+          job.status = value;
+        }
+        else if (name == kServerTypeField)
+        {
+          job.serverType = value;
+        }
+        else if (name == kServerIdField)
+        {
+          job.serverId = value;
+        }
+        else
+        {
+          job.fields[name] = value;
+        }
       }
       if (job.serverType != serverType || job.serverId != serverId)
       {
