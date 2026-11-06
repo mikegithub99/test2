@@ -52,8 +52,8 @@ public:
   /**
    * @brief Starts the process-wide cleanup manager.
    *
-   * The provider is evaluated only on the first call. An empty provider uses
-   * default configuration. Repeated calls do not create additional threads.
+   * The provider is evaluated by the manager constructor. An empty provider
+   * uses default configuration. Repeated calls do not create additional threads.
    * Call Start(provider) before HeartbeatStart() to inject custom settings.
    *
    * @param provider Optional source of all manager timing settings.
@@ -93,8 +93,8 @@ public:
   void stop();
 
 private:
-  /** @brief Constructs the manager and starts its cleanup thread. */
-  explicit RedisHeartbeatManager(const Config& config);
+  /** @brief Constructs the manager, loads its configuration, and starts cleanup. */
+  explicit RedisHeartbeatManager(ConfigProvider provider);
 
   /** @brief Runs cleanup scans until shutdown is requested. */
   void cleanupLoop();
