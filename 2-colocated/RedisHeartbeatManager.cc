@@ -412,7 +412,7 @@ void RedisHeartbeatManager::scanOnce()
           }
 
           const vector<string> args = {
-              token, std::to_string(kLeaseTtlMs)};
+              token, std::to_string(m_config.cleanupLeaseTtlMilliseconds)};
 
           if (evalScript(
                   redis,
