@@ -588,19 +588,20 @@ return out
 // Summary snapshot: KEYS[1..] are summary hashes; ARGV[1..] are server IDs.
 // Missing hashes are omitted. The entire read is one per-type Lua execution.
 const char* const kReadServerSummariesSnapshotScript = R"lua(
-if #KEYS ~= #ARGV then
+-- KEYS[1] is a per-type routing key, allowing empty ID lists in Cluster.
+if #KEYS ~= #ARGV + 1 then
   return redis.error_reply('invalid summary snapshot arguments')
 end
 local out = {}
 local records = {}
-for i = 1, #KEYS do
+for i = 2, #KEYS do
   local t = redis.call('TYPE', KEYS[i]).ok
   if t ~= 'none' and t ~= 'hash' then
     return redis.error_reply('wrong server summary key type')
   end
   if t == 'hash' then
     local fields = redis.call('HGETALL', KEYS[i])
-    table.insert(records, ARGV[i])
+    table.insert(records, ARGV[i - 1])
     table.insert(records, fields)
   end
 end

@@ -44,3 +44,14 @@ getServerSummaries() discovers server IDs in the registry slot, then reads all e
 
 ## Validation
 Not compiled or tested against live Redis or Redis Cluster. Validate concurrent lease acquisition, crash/takeover, stale-token operations, slow scans and overlap, heartbeat/fencing races, Phase A/Phase B recovery, counter integrity, atomic reads during cleanup, and Cluster slot behavior before deployment.
+
+
+## Worker heartbeat publisher entry point
+
+The worker invokes `RedisHeartbeatManager::HeartbeatStart(sharedStatus)`
+after registration. This idempotent process-level entry point retains a
+`shared_ptr<RedisJobStatus>`, publishes immediately, and refreshes the heartbeat
+every 10 seconds with a 30-second TTL. It catches refresh errors and retries
+on the next interval. The heartbeat publisher and cleanup scanner are separate
+threads: `HeartbeatStart()` publishes this process's liveness, while
+`Start()` coordinates global cleanup scans through the Redis lease.

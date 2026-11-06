@@ -7,6 +7,7 @@
 #include <stdexcept>
 #include <string>
 #include <vector>
+#include <utility>
 #include "RedisJobScripts.inc"
 using std::back_inserter;
 using std::int64_t;

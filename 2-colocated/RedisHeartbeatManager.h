@@ -8,6 +8,8 @@
 #include <thread>
 #include "RedisClient.h"
 
+class RedisJobStatus;
+
 // One cleanup thread per worker process. Redis lease elects the normal scan
 // owner; per-server Lua fencing remains authoritative if scans overlap.
 class RedisHeartbeatManager final
@@ -15,6 +17,9 @@ class RedisHeartbeatManager final
 public:
   static constexpr std::int64_t kCleanupScanIntervalSeconds = 5;
   static void Start();
+  // Starts the worker heartbeat publisher once per process. The shared status
+  // object is retained for the publisher thread lifetime.
+  static void HeartbeatStart(std::shared_ptr<RedisJobStatus> status);
   RedisHeartbeatManager(const RedisHeartbeatManager&) = delete;
   RedisHeartbeatManager& operator=(const RedisHeartbeatManager&) = delete;
   ~RedisHeartbeatManager();
