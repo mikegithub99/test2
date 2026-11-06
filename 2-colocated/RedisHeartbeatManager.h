@@ -9,6 +9,7 @@
 #include <chrono>
 #include <condition_variable>
 #include <cstdint>
+#include <functional>
 #include <memory>
 #include <mutex>
 #include <thread>
@@ -31,15 +32,28 @@ class RedisJobStatus;
 class RedisHeartbeatManager final
 {
 public:
+  /** @brief Configuration containing only the two Redis TTL values. */
+  struct Config
+  {
+    std::int64_t heartbeatTtlSeconds = 30;
+    std::int64_t cleanupLeaseTtlMilliseconds = 30000;
+  };
+
+  using ConfigProvider = std::function<Config()>;
+
   /** @brief Interval between stale-worker cleanup scans, in seconds. */
   static constexpr std::int64_t kCleanupScanIntervalSeconds = 5;
 
   /**
    * @brief Starts the process-wide cleanup manager.
    *
-   * Repeated calls are safe and do not create additional cleanup threads.
+   * The provider is evaluated only on the first call. An empty provider uses
+   * the default TTL values. Repeated calls do not create additional threads.
+   *
+   * @param provider Optional source of heartbeat and cleanup-lease TTL values.
+   * @throws std::invalid_argument if either configured TTL is not positive.
    */
-  static void Start();
+  static void Start(ConfigProvider provider = {});
 
   /**
    * @brief Starts the process-wide worker heartbeat publisher.
@@ -74,11 +88,12 @@ public:
 
 private:
   /** @brief Constructs the manager and starts its cleanup thread. */
-  RedisHeartbeatManager();
+  explicit RedisHeartbeatManager(const Config& config);
 
   /** @brief Runs cleanup scans until shutdown is requested. */
   void cleanupLoop();
 
+  Config m_config; ///< Injected TTL configuration.
   std::shared_ptr<RedisClient> m_client; ///< Redis client used for cleanup.
   std::chrono::seconds m_scanInterval{kCleanupScanIntervalSeconds}; ///< Cleanup scan cadence.
   std::mutex m_mutex; ///< Protects cleanup-thread shutdown state.
