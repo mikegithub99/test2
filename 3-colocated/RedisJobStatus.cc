@@ -493,7 +493,8 @@ void RedisJobStatus::registerServer(
   // Publish ACTIVE only after registry membership and both metadata hashes
   // are initialized. This is the final registration step. A terminal identity
   // is never reactivated; process IDs are globally unique and never reused.
-  const KeyList stateKeys = {serverStateKey(m_serverType)};
+  const KeyList stateKeys = {
+      serverStateKey(m_serverType), serverSummaryKey(m_serverType, m_serverId)};
   const ArgList stateArgs = {m_serverId};
   const auto activation = m_client->execute([&](auto& redis)
   {
