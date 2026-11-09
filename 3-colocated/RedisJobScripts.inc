@@ -398,7 +398,8 @@ return 1
 // RedisHeartbeatManager scripts. Kept in this shared include alongside the
 // job lifecycle and heartbeat-refresh scripts so all Lua remains in one file.
 // Fence KEYS: heartbeat, state hash, server jobs set, server summary hash,
-// live set, retired-server sorted set. ARGV[1]: serverId.
+// live set, retired-server sorted set. ARGV[1]: serverId;
+// ARGV[2]: first-heartbeat startup timeout in milliseconds.
 // Returns 0=not expired/not eligible, 1=fenced/already fenced,
 // 2=Phase A already completed.
 // ---------------------------------------------------------------------------
