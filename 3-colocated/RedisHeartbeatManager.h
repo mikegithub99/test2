@@ -35,8 +35,8 @@ public:
   /**
    * @brief Timing configuration for heartbeat publication and stale-worker cleanup.
    *
-   * All durations are independently configurable. Defaults preserve the
-   * original manager behavior.
+   * All durations are independently configurable. The first-heartbeat
+   * timeout is a startup grace period, not a substitute for a heartbeat.
    */
   struct Config
   {
@@ -45,6 +45,8 @@ public:
     std::int64_t cleanupLeaseTtlMilliseconds = 30000;
     std::int64_t cleanupLeaseRenewIntervalSeconds = 5;
     std::int64_t cleanupScanIntervalSeconds = 5;
+    // Maximum time allowed between registration and the first heartbeat.
+    std::int64_t firstHeartbeatTimeoutSeconds = 60;
     std::int64_t retiredTombstoneRetentionSeconds = 24 * 60 * 60;
   };
 
