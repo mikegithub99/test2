@@ -14,37 +14,39 @@ The default `RedisJobStatus` constructor reads these host-application registry v
 
 `redisJobStatusEnabled` accepts `true`/`false`, `1`/`0`, and `yes`/`no`, case-insensitively. Empty or unset defaults to enabled. Configuration is read when each `RedisJobStatus` object is constructed; the object retains its configured identity.
 
-Keep one long-lived `RedisJobStatus` object per server process and use it for registration, lifecycle calls, reads, and heartbeat publishing. The default constructor obtains the shared `RedisClient` only when enabled. When disabled, result-returning mutators return `Disabled`, void mutators do nothing, and read methods return empty collections.
+Use the process-wide `RedisJobStatus::Instance()` as the public construction path. It retains the configured server identity and shared Redis client for the process lifetime; use the returned `shared_ptr` for registration, lifecycle calls, reads, and heartbeat publishing. The constructor is private. When disabled, result-returning mutators return `Disabled`, void mutators do nothing, and read methods return empty collections.
 
-Tests can inject a configuration provider:
+Tests can inject a configuration provider on the first singleton call:
 
 ```cpp
-RedisJobStatus status([] {
+const auto status = RedisJobStatus::Instance([] {
   RedisJobStatus::Config config;
   config.enabled = false;
   return config;
 });
 ```
 
+The singleton is initialized only once per process; later providers are ignored. Tests needing multiple independent configurations should use separate processes or a dedicated test seam rather than attempting to reconstruct the singleton.
+
 The `RedisClient::Instance()` singleton is initialized on its first call. Its default provider reads `redisUrl` and `isRedisCluster` through the host registry. A custom provider must be supplied on that first call; later providers are ignored. Initialize host configuration before constructing `RedisJobStatus` or making the first client call.
 
 ## Worker startup
 
-The worker uses two process-level start methods:
+The worker uses the public singleton entry points:
 
 ```cpp
-auto status = std::make_shared<RedisJobStatus>();
+const auto status = RedisJobStatus::Instance();
 status->registerServer(typeMetadata, serverMetadata);
 
-RedisHeartbeatManager::Start();
-RedisHeartbeatManager::HeartbeatStart(status);
+const auto manager = RedisHeartbeatManager::Instance();
+manager->HeartbeatStart();
 ```
 
-- `RedisHeartbeatManager::Start()` starts one cleanup-scanning thread in this process. The distributed Redis lease elects the normal global registry scan owner across all worker processes.
-- `RedisHeartbeatManager::HeartbeatStart(status)` starts one heartbeat-publishing thread in this process. It retains the supplied `shared_ptr<RedisJobStatus>`, publishes immediately, then calls `refreshHeartbeat(30)` every 10 seconds.
-- Both calls are idempotent within a process: repeated calls do not create duplicate threads. The first `HeartbeatStart()` call supplies the status object used by that process's heartbeat thread.
+- `RedisHeartbeatManager::Instance()` creates the process-wide manager and starts its cleanup-scanning thread. The distributed Redis lease elects the normal global registry scan owner across all worker processes.
+- `HeartbeatStart()` starts one heartbeat-publishing thread in this process. It obtains `RedisJobStatus::Instance()`, publishes immediately, then calls `refreshHeartbeat(heartbeatTtlSeconds)` every configured refresh interval.
+- Both singleton access and `HeartbeatStart()` are idempotent within a process. The first singleton call fixes that singleton's configuration provider; later providers are ignored.
 
-The `RedisJobStatus` object must be shared with `HeartbeatStart()` and remain available to application code. Use the same object for job lifecycle operations. The background heartbeat thread catches and logs refresh errors and continues retrying on the next interval. The worker's normal event/work loop runs independently. At process shutdown, the static runner stops and joins its thread.
+Use the same `RedisJobStatus::Instance()` object for registration and job lifecycle operations. The heartbeat thread catches and logs refresh errors and retries on the next interval. The worker's normal event/work loop runs independently. The manager owns the cleanup thread; its heartbeat runner is stopped when the process-wide manager is destroyed during orderly shutdown.
 
 ## TTLs and timing configuration
 
@@ -52,46 +54,44 @@ There are **two Redis keys with expiration (TTL) in this implementation**. They 
 
 | TTL | Redis key | Current value | What it controls | Where to change it |
 |---|---|---:|---|---|
-| Worker heartbeat TTL | `heartbeat:server:{<serverType>}:<serverId>` | 30 seconds | How long a worker's last heartbeat remains present after its most recent successful refresh. When it expires, the cleanup scanner may fence the worker. | The `refreshHeartbeat(30)` call in `HeartbeatRunner::run()` in `RedisHeartbeatManager.cc`. |
-| Distributed cleanup-lease TTL | `servers:{registry}:cleanup-lease` | 30 seconds (30,000 ms) | How long the registry-scan ownership lease remains valid if its owner stops renewing it. This coordinates cleanup scanners; it is **not** a worker heartbeat. | `kLeaseTtlMs = 30000` near the top of `RedisHeartbeatManager.cc`. |
+| Worker heartbeat TTL | `heartbeat:server:{<serverType>}:<serverId>` | 30 seconds | How long a worker's last heartbeat remains present after its most recent successful refresh. When it expires, the cleanup scanner may fence the worker. | `RedisHeartbeatManager::Config::heartbeatTtlSeconds`. |
+| Distributed cleanup-lease TTL | `servers:{registry}:cleanup-lease` | 30 seconds (30,000 ms) | How long the registry-scan ownership lease remains valid if its owner stops renewing it. This coordinates cleanup scanners; it is **not** a worker heartbeat. | `RedisHeartbeatManager::Config::cleanupLeaseTtlMilliseconds`. |
 
 The current related intervals are **not TTLs**:
 
 | Interval | Current value | Where to change it |
 |---|---:|---|
-| Worker heartbeat refresh interval | 10 seconds | The `std::chrono::seconds(10)` wait in `HeartbeatRunner::run()` in `RedisHeartbeatManager.cc`. |
-| Cleanup scan interval | 5 seconds | `kCleanupScanIntervalSeconds = 5` in `RedisHeartbeatManager.h`. |
-| Cleanup-lease renewal interval | 5 seconds | `kLeaseRenewInterval = std::chrono::seconds(5)` in `RedisHeartbeatManager.cc`. |
+| Worker heartbeat refresh interval | 10 seconds | `RedisHeartbeatManager::Config::heartbeatRefreshIntervalSeconds`. |
+| Cleanup scan interval | 5 seconds | `RedisHeartbeatManager::Config::cleanupScanIntervalSeconds`. |
+| Cleanup-lease renewal interval | 5 seconds | `RedisHeartbeatManager::Config::cleanupLeaseRenewIntervalSeconds`. |
 
-**How to change the worker heartbeat:** change both its TTL argument and its refresh wait. For example, to use a 60-second heartbeat TTL refreshed every 15 seconds, change the call to `m_status->refreshHeartbeat(60)` and the wait to `std::chrono::seconds(15)`. Keep the refresh interval comfortably shorter than the TTL; 15/60 seconds gives a 4:1 TTL-to-refresh ratio. Manual calls to `status.refreshHeartbeat(ttlSeconds)` use the TTL passed to that call.
+**How to change the timing:** supply a `RedisHeartbeatManager::Config` provider on the first `RedisHeartbeatManager::Instance(provider)` call. For example, set `heartbeatTtlSeconds = 60` and `heartbeatRefreshIntervalSeconds = 15` for a 60-second heartbeat refreshed every 15 seconds. Keep the refresh interval comfortably shorter than the TTL. The same configuration controls the cleanup lease TTL, lease renewal interval, scan interval, and tombstone retention.
 
-**How to change the cleanup lease:** change `kLeaseTtlMs` in milliseconds (for example, `60000` for 60 seconds). Keep `kLeaseRenewInterval` comfortably shorter than the lease TTL; the current 5-second renewal interval is suitable for the current 30-second lease. The cleanup scan cadence is controlled separately by `kCleanupScanIntervalSeconds`.
-
-These values are currently **compile-time settings in the C++ source**, not host registry settings or runtime configuration. After changing them, rebuild and deploy the worker. The two TTLs do not need to be equal. A heartbeat TTL controls worker-liveness detection; the cleanup-lease TTL controls scanner coordination.
+These values default in `RedisHeartbeatManager.h` and can be overridden through the singleton's first-call configuration provider. They are not read from the host registry. After changing them, rebuild and deploy the worker. The two TTLs do not need to be equal. A heartbeat TTL controls worker-liveness detection; the cleanup-lease TTL controls scanner coordination.
 
 **Important expiry behavior:** expiration of the worker heartbeat key does not itself change the worker's state. The cleanup scanner must run and execute the fencing script before lifecycle operations are rejected. Detection therefore also depends on the cleanup scan interval and Redis/network/scheduling delays.
 
 ## Public job-status API
 
 ```cpp
-RedisJobStatus status;
+const auto status = RedisJobStatus::Instance();
 
-status.registerServer(typeMetadata, serverMetadata);
-status.refreshHeartbeat(30); // also available for explicit/manual refresh
+status->registerServer(typeMetadata, serverMetadata);
+status->refreshHeartbeat(30); // optional explicit/manual refresh
 
-status.createPendingJob("job-100", jobMetadata);
-status.transitionJob("job-100", RedisJobStatus::State::Active);
-status.transitionJob("job-100", RedisJobStatus::State::Suspended);
-status.transitionJob("job-100", RedisJobStatus::State::Active);
-status.completeJob("job-100");
+status->createPendingJob("job-100", jobMetadata);
+status->transitionJob("job-100", RedisJobStatus::State::Active);
+status->transitionJob("job-100", RedisJobStatus::State::Suspended);
+status->transitionJob("job-100", RedisJobStatus::State::Active);
+status->completeJob("job-100");
 
-auto types = status.getServerTypes();
-auto typeCounters = status.getTypeSummary("query");
-auto servers = status.getServerSummaries("query");
-auto jobs = status.getServerJobs("query", "query-01");
+auto types = status->getServerTypes();
+auto typeCounters = status->getTypeSummary("query");
+auto servers = status->getServerSummaries("query");
+auto jobs = status->getServerJobs("query", "query-01");
 ```
 
-The configured identity is used by registration, lifecycle operations, and heartbeats. Read APIs accept the server type and, where needed, server ID explicitly.
+The configured identity is used by registration, lifecycle operations, and heartbeats. Read APIs accept the server type and, where needed, server ID explicitly. The constructor is private; acquire the object through `RedisJobStatus::Instance()`.
 
 Supported transitions:
 
@@ -190,6 +190,8 @@ The retired timestamp is written atomically with the `ACTIVE → DELETING` trans
 
 The registry membership check and Phase C Lua script cannot be one atomic operation because they use different Redis Cluster slots. The once-only registration invariant makes the check stable: after Phase B removes membership, no code path may add that ID again. Phase C still checks all per-type safety conditions atomically.
 
+**Startup crash limitation:** registration currently activates the per-type state before adding the ID to the registry, then performs metadata initialization in separate operations. If the process crashes in that sequence, an `ACTIVE` state can be left without registry membership; if it crashes after registry insertion but before its first heartbeat, the scanner deliberately refuses to fence it because it has not joined the live set. Such partial-startup records are not automatically recovered by the current scanner. The worker must complete registration and start its heartbeat promptly, and operators must monitor/reconcile incomplete startup records. A fully automatic solution requires a durable startup-grace/registration protocol spanning the registry and per-type slots; simply removing the first-heartbeat guard would introduce a race that can fence a healthy starting worker.
+
 The cleanup lease remains a scan-load optimization, not a correctness lock. A stale manager may resume after lease expiry, but its fence script cannot transition a missing/non-`ACTIVE` state, its cleanup script requires `DELETING`, and Phase C removes a tombstone only after Phase A data is gone and Phase B membership is absent. Redis Lua does not roll back earlier writes after runtime errors; cleanup scripts preflight before writing.
 
 ## Dashboard read consistency
@@ -208,7 +210,7 @@ The cleanup lease remains a scan-load optimization, not a correctness lock. A st
 
 ## Build and validation
 
-Requires C++17, redis-plus-plus, hiredis, and host-provided `get_reg_val(const std::string&)` and `initializeConfiguration()`. Compile `RedisClient.cc`, `RedisJobStatus.cc`, and `RedisHeartbeatManager.cc` into the worker, with the project's Redis include/link settings. The `heartbeat.cc` file is an example main; integrate its startup sequence into the host worker rather than linking a second main.
+Requires C++17, redis-plus-plus, hiredis, and host-provided `get_reg_val(const std::string&)` and `initializeConfiguration()`. Compile `RedisClient.cc`, `RedisJobStatus.cc`, `RedisHeartbeatManager.cc`, and `HeartbeatRunner.cc` into the worker, with the project's Redis include/link settings. The `heartbeat.cc` file is an example main using the actual singleton API; integrate its startup sequence into the host worker rather than linking a second main.
 
 The code has not been compiled or tested against live Redis or Redis Cluster. Verify the installed redis-plus-plus version supports `eval<std::vector<std::string>>`. Test lease acquisition/takeover and stale tokens, lease expiry during slow scans, heartbeat/fencing and lifecycle races, Phase A/Phase B recovery, Phase C retention and tombstone collection, stale managers resuming before/after Phase C, the one-time registration invariant, dashboard reads concurrent with cleanup, malformed key types, counter integrity, and actual Cluster slot routing before deployment.
 
