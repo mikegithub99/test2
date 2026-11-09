@@ -206,6 +206,8 @@ A crash after Phase A is recovered by retrying Phase B. A crash after Phase B le
 
 **First-heartbeat behavior:** if registration completes and the worker never sends its first heartbeat, the scanner fences it after the 60-second default startup grace period (or the configured value), then runs the same Phase A/B/C cleanup. If a first heartbeat arrives before the deadline, normal heartbeat TTL monitoring applies thereafter.
 
+**Existing ACTIVE records during upgrade:** records created before this registration timestamp was introduced may not have a `registeredAt:<serverId>` field. The fence script intentionally does not guess their age, so a never-heartbeated legacy ACTIVE record without that field is not automatically expired by the new startup timeout. Existing servers with a live-set marker continue to use normal heartbeat TTL expiry. Audit/reconcile legacy ACTIVE records without a registration timestamp during rollout.
+
 **Remaining partial-registration limitation:** registration currently activates the per-type state before adding the ID to the global registry set. If the process crashes after activation but before registry insertion, the per-type `ACTIVE` record is not discoverable by the current registry-driven scan. The first-heartbeat timeout does not solve that specific window. Fixing it fully requires either scanning per-type state hashes independently or a carefully staged cross-slot registration/reconciliation protocol; a single cross-slot Lua transaction is impossible. This limitation is explicitly not claimed as solved here.
 
 
