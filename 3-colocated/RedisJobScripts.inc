@@ -368,7 +368,10 @@ end
 local current = redis.call('HGET', stateKey, ARGV[1])
 if current == 'ACTIVE' then return 1 end
 if current ~= false then return 0 end
-redis.call('HSET', stateKey, ARGV[1], 'ACTIVE')
+local now = redis.call('TIME')
+local nowMs = tonumber(now[1]) * 1000 + math.floor(tonumber(now[2]) / 1000)
+redis.call('HSET', stateKey, ARGV[1], 'ACTIVE',
+           'registeredAt:' .. ARGV[1], nowMs)
 return 1
 )lua";
 
@@ -442,9 +445,18 @@ if current == 'DELETING' then
 end
 if current ~= 'ACTIVE' then return 0 end
 
--- Do not collect a registered process until it has published its first
--- heartbeat. The state change and expiry check are atomic with refresh.
-if redis.call('SISMEMBER', live, ARGV[1]) == 0 then return 0 end
+-- A live-set member has published at least one heartbeat. If it has not,
+-- allow startup only until the registration grace period expires. Missing
+-- timestamps are legacy/incomplete records and are left untouched rather
+-- than guessed at. This check and heartbeat refresh share the type slot.
+local hasHeartbeated = redis.call('SISMEMBER', live, ARGV[1]) == 1
+if not hasHeartbeated then
+  local registeredAt = tonumber(redis.call(
+      'HGET', state, 'registeredAt:' .. ARGV[1]) or '')
+  local timeoutMs = tonumber(ARGV[2])
+  if not registeredAt or not timeoutMs or timeoutMs <= 0 then return 0 end
+  if redisTimeMs() - registeredAt < timeoutMs then return 0 end
+end
 redis.call('HSET', state, ARGV[1], 'DELETING')
 redis.call('ZADD', retired, redisTimeMs(), ARGV[1])
 return 1
@@ -732,7 +744,7 @@ if redis.call('EXISTS', heartbeat) ~= 0 or
    redis.call('SISMEMBER', live, serverId) ~= 0 then
   return 0
 end
-redis.call('HDEL', state, serverId)
+redis.call('HDEL', state, serverId, 'registeredAt:' .. serverId)
 redis.call('ZREM', retired, serverId)
 return 1
 )lua";
