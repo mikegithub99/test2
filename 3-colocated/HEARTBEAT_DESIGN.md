@@ -29,6 +29,7 @@ Defaults are declared in `RedisHeartbeatManager::Config` in `RedisHeartbeatManag
 - Cleanup lease TTL: 30,000 milliseconds.
 - Cleanup lease renewal interval: 5 seconds.
 - Cleanup scan interval: 5 seconds.
+- First-heartbeat startup grace period: 60 seconds.
 - Retired tombstone retention: 24 hours.
 
 Override these values by supplying a configuration provider on the first `RedisHeartbeatManager::Instance(provider)` call. They are not host registry settings. The heartbeat publisher is implemented in `HeartbeatRunner.cc`; cleanup scanning is implemented in `RedisHeartbeatManager.cc`.
@@ -45,9 +46,9 @@ Registry keys and the lease use the `{registry}` hash tag. Heartbeats, lifecycle
 
 ## Three-phase cleanup protocol
 
-Heartbeat refresh verifies `ACTIVE`, writes the heartbeat TTL, and adds live-set membership atomically. Fencing verifies heartbeat absence, `ACTIVE` state, and prior live-set membership, then changes the candidate to terminal `DELETING`. Job lifecycle scripts reject writes after fencing. Redis serializes these scripts in the per-type slot.
+Heartbeat refresh verifies `ACTIVE`, writes the heartbeat TTL, and adds live-set membership atomically. Live-set membership is the durable indication that the server has published at least one heartbeat. Fencing verifies heartbeat absence and `ACTIVE` state. If the server has heartbeated before, normal heartbeat TTL expiry makes it eligible. If it has never heartbeated, fencing waits for the registration timestamp plus `firstHeartbeatTimeoutSeconds` (60 seconds by default). The timestamp and state are in the per-type state hash, and the eligibility check plus `ACTIVE → DELETING` transition execute atomically in the same per-type slot as heartbeat refresh. A first heartbeat racing the timeout therefore either wins before fencing or is rejected after fencing. Job lifecycle scripts reject writes after fencing.
 
-- **Phase A — fence and clean (per-type slot):** fencing atomically changes `ACTIVE` to `DELETING` and records the retirement timestamp in `servers:retired:{<serverType>}` using Redis TIME. The cleanup script preflights job ownership, statuses, indexes, key types, and counters; deletes the candidate's jobs and per-server summary; updates type counters; removes heartbeat/live membership; and retains the tombstone.
+- **Phase A — fence and clean (per-type slot):** registration records `registeredAt:<serverId>` in `servers:state:{<serverType>}` using Redis TIME. The fence script checks heartbeat absence and ACTIVE state. Previously heartbeating servers are eligible after heartbeat TTL expiry; never-heartbeated servers become eligible only after the configured first-heartbeat startup grace period. Fencing atomically changes `ACTIVE` to `DELETING` and records the retirement timestamp in `servers:retired:{<serverType>}` using Redis TIME. The cleanup script preflights job ownership, statuses, indexes, key types, and counters; deletes the candidate's jobs and per-server summary; updates type counters; removes heartbeat/live membership; and retains the tombstone.
 - **Phase B — remove registry membership (registry slot):** after Phase A is confirmed, remove only the exact ID from `servers:{registry}:type:<serverType>`. A crash between A and B is retried by a later scan.
 - **Phase C — collect old tombstones (per-type slot):** discover old IDs from the retired sorted set (not the registry), confirm registry absence in the registry slot, then run Lua that checks the tombstone, Redis-time retention age, and absence of heartbeat, server-job index, server summary, and live membership. It removes only that server's hash field and sorted-set entry. Default retention is 24 hours, configured by `RedisHeartbeatManager::Config::retiredTombstoneRetentionSeconds`.
 
@@ -55,9 +56,14 @@ The timestamp is recorded atomically with fencing. Redis hashes have no per-fiel
 
 ## Registration invariant and startup failure limitation
 
-The Phase C registry check and per-type collection cannot be one atomic operation because they use different Cluster slots. Safety therefore relies on the existing identity contract: each server ID is globally unique, never reused, and `registerServer()` is called exactly once. No delayed or retried startup registration may resume after retirement.
+Each server ID is globally unique, never reused, and `registerServer()` is called exactly once. No delayed or retried startup registration may resume after retirement. The first heartbeat remains mandatory for liveness; the registration grace period is only a deadline for an incomplete startup, not a substitute heartbeat.
 
-There is also a partial-startup limitation in the current registration protocol. It activates per-type state before adding registry membership, and performs summary initialization separately. A crash after activation but before registry insertion can leave an ACTIVE state that the registry-driven scanner cannot discover. A crash after registry insertion but before the first heartbeat leaves a registry entry that the scanner intentionally will not fence because live-set membership is absent. The first-heartbeat guard protects healthy startup from being mistaken for a dead worker; removing it without a durable startup grace protocol would be unsafe. The worker must complete registration and start heartbeat promptly, and operators must monitor/reconcile incomplete startup records. Fully automatic recovery needs an explicit durable registration/startup-grace design across the two slots; it is not implemented here.
+If registration completes and the worker never sends its first heartbeat, the cleanup scanner fences it after `firstHeartbeatTimeoutSeconds` (60 seconds by default). If the first heartbeat arrives before that deadline, the live-set marker is established and the normal heartbeat TTL governs subsequent liveness. Both the heartbeat refresh and fence check run in the per-type slot, so the race is serialized.
+
+The Phase C registry check and per-type collection cannot be one atomic operation because they use different Cluster slots. Safety relies on the unique, never-reused ID and once-only registration contract. Phase C also removes the per-server `registeredAt:<serverId>` field with the state tombstone.
+
+**Known partial-registration window:** `registerServer()` currently activates per-type state before adding the ID to the global registry. If the process crashes after activation but before registry insertion, the ACTIVE state is not visible to the current registry-driven scanner. The new first-heartbeat timeout handles a registered server that never heartbeats; it does not discover this earlier partial-registration window. This remaining case requires per-type state scanning or an explicit staged registration/reconciliation protocol. It cannot be solved by a Lua script spanning both Cluster slots. Do not claim that all partial registration crashes are automatically recovered.
+
 
 ## Lease expiry and stale managers
 
