@@ -369,8 +369,8 @@ local serverSummaryKey = KEYS[2]
 local stateType = redis.call('TYPE', stateKey).ok
 local summaryType = redis.call('TYPE', serverSummaryKey).ok
 if (stateType ~= 'none' and stateType ~= 'hash') or
-   summaryType ~= 'hash' then
-  return redis.error_reply('wrong activation key type or missing server metadata')
+   (summaryType ~= 'none' and summaryType ~= 'hash') then
+  return redis.error_reply('wrong activation key type')
 end
 local current = redis.call('HGET', stateKey, ARGV[1])
 if current == 'ACTIVE' then return 1 end
