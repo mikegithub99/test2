@@ -23,9 +23,8 @@ class HeartbeatRunner;
  * @class RedisHeartbeatManager
  * @brief Publishes worker heartbeats and removes workers whose leases expire.
  *
- * Start() creates one cleanup manager per process. HeartbeatStart() creates
- * one heartbeat publisher per process and retains the supplied status object
- * for the publisher thread's lifetime.
+ * Instance() creates one cleanup manager per process. HeartbeatStart() creates
+ * one heartbeat publisher per process using RedisJobStatus::Instance().
  *
  * Cleanup ownership is coordinated through a Redis lease. Per-server Lua
  * fencing remains authoritative if cleanup scans overlap.
