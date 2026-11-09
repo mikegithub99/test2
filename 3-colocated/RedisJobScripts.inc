@@ -311,11 +311,10 @@ return 1
 )lua";
 
  /**
-  * @brief Merges metadata into one server-ID summary hash and records registration time.
+  * @brief Merges caller metadata into one server-ID summary hash.
   *
   * KEYS[1] is the server summary hash. ARGV[1] is metadata pair count;
-  * remaining arguments are field/value pairs. The script generates
-  * meta:registeredAt with Redis TIME and preserves it on retries.
+  * remaining arguments are field/value pairs.
   */
 const char* const kSetServerSummaryMetadataScript = R"lua(
 local summaryKey = KEYS[1]
@@ -333,9 +332,6 @@ for i = 1, count do
   redis.call('HSET', summaryKey, 'meta:' .. ARGV[cursor], ARGV[cursor + 1])
   cursor = cursor + 2
 end
-local now = redis.call('TIME')
-local nowMs = tonumber(now[1]) * 1000 + math.floor(tonumber(now[2]) / 1000)
-redis.call('HSETNX', summaryKey, 'meta:registeredAt', nowMs)
 return 1
 )lua";
 
@@ -365,17 +361,23 @@ return redis.call('SADD', typeServersKey, serverId)
 )lua";
 
 
-// Per-type lifecycle state initialization. This script is deliberately separate
-// from registry registration because the two key groups occupy different slots.
+// Per-type lifecycle activation. The state and summary keys share {serverType},
+// so ACTIVE and its Redis-generated registration timestamp are committed together.
 const char* const kActivateServerScript = R"lua(
 local stateKey = KEYS[1]
-local keyType = redis.call('TYPE', stateKey).ok
-if keyType ~= 'none' and keyType ~= 'hash' then
-  return redis.error_reply('wrong state key type')
+local serverSummaryKey = KEYS[2]
+local stateType = redis.call('TYPE', stateKey).ok
+local summaryType = redis.call('TYPE', serverSummaryKey).ok
+if (stateType ~= 'none' and stateType ~= 'hash') or
+   summaryType ~= 'hash' then
+  return redis.error_reply('wrong activation key type or missing server metadata')
 end
 local current = redis.call('HGET', stateKey, ARGV[1])
 if current == 'ACTIVE' then return 1 end
 if current ~= false then return 0 end
+local now = redis.call('TIME')
+local nowMs = tonumber(now[1]) * 1000 + math.floor(tonumber(now[2]) / 1000)
+redis.call('HSETNX', serverSummaryKey, 'meta:registeredAt', nowMs)
 redis.call('HSET', stateKey, ARGV[1], 'ACTIVE')
 return 1
 )lua";
