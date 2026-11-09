@@ -4,7 +4,7 @@ This directory is the current colocated implementation of the C++17 Redis-backed
 
 ## Configuration and object lifetime
 
-The default `RedisJobStatus` constructor reads these host-application registry values through `get_reg_val(const std::string&)`:
+The default configuration provider used by `RedisJobStatus::Instance()` reads these host-application registry values through `get_reg_val(const std::string&)`:
 
 | Registry key | Purpose |
 |---|---|
@@ -12,7 +12,7 @@ The default `RedisJobStatus` constructor reads these host-application registry v
 | `redisJobStatusServerType` | Worker/server type used in Redis keys and job ownership |
 | `redisJobStatusServerId` | Stable identity of this worker/server instance |
 
-`redisJobStatusEnabled` accepts `true`/`false`, `1`/`0`, and `yes`/`no`, case-insensitively. Empty or unset defaults to enabled. Configuration is read when each `RedisJobStatus` object is constructed; the object retains its configured identity.
+`redisJobStatusEnabled` accepts `true`/`false`, `1`/`0`, and `yes`/`no`, case-insensitively. Empty or unset defaults to enabled. The singleton reads configuration on its first construction and retains that identity for the process lifetime; later configuration providers are ignored.
 
 Use the process-wide `RedisJobStatus::Instance()` as the public construction path. It retains the configured server identity and shared Redis client for the process lifetime; use the returned `shared_ptr` for registration, lifecycle calls, reads, and heartbeat publishing. The constructor is private. When disabled, result-returning mutators return `Disabled`, void mutators do nothing, and read methods return empty collections.
 
@@ -127,7 +127,7 @@ Metadata values are stored as strings in Redis hashes.
 
 Job hash fields owned by the API are `jobId`, `status`, `serverType`, and `serverId`. Caller metadata using these names is ignored; the API writes authoritative values. Metadata field names must not be empty.
 
-The type summary initializes `meta:createdAt` once in UTC ISO-8601 form using `HSETNX`. Caller-supplied server-type metadata named `createdAt` is rejected. Server-instance metadata has no additional reserved names.
+The type summary initializes `meta:createdAt` once in UTC ISO-8601 form and `meta:createdByServerId` once with the ID of the first server to initialize that type summary, both using `HSETNX`. Caller-supplied server-type metadata named `createdAt` or `createdByServerId` is rejected. Server-instance registration initializes `meta:registeredAt` internally using Redis `TIME` during the final activation operation, atomically with creation of the `ACTIVE` state. Caller-supplied server-instance metadata named `registeredAt` is rejected.
 
 ## Redis key layout
 
@@ -153,7 +153,7 @@ Redis Cluster uses the text inside the first non-empty pair of braces as a hash 
 
 Job lifecycle keys use `{serverType}`; job hashes, type/server indexes, summaries, heartbeat, live membership, and state for that type share a slot. Different server types can be distributed across slots.
 
-Registration updates `servers:{registry}:types` and `servers:{registry}:type:<serverType>` in one script; both use the literal `{registry}` tag. Registry keys intentionally occupy a different slot from per-type data. Type-summary initialization and server-summary metadata updates therefore run as separate operations.
+Registration first updates `servers:{registry}:types` and `servers:{registry}:type:<serverType>` in one script; both use the literal `{registry}` tag. It then initializes type-summary metadata and server-summary metadata in separate operations, and finally activates the server in a per-type-slot Lua script that generates `meta:registeredAt` and writes `ACTIVE` atomically. Registry keys intentionally occupy a different slot from per-type data, so the complete registration workflow is not one atomic cross-slot operation.
 
 Pass every accessed key explicitly through Lua `KEYS` and preserve the same-slot requirement. Redis Lua scripts execute without interleaving, but they are not rollback transactions: validate key types and state before writing.
 
@@ -243,7 +243,7 @@ The cleanup lease coordinates normal scan ownership; it is not the sole correctn
 
 Correctness is protected at the per-server level by the Redis Lua lifecycle scripts:
 
-- **Atomic fencing:** `kFenceExpiredServerScript` checks that the heartbeat is absent, that the server has published its first heartbeat, and that its state is `ACTIVE`. It then changes the state to `DELETING` atomically. Heartbeat refresh and this transition operate in the same per-type Redis Cluster slot, so Redis serializes the competing scripts. Whichever runs first determines whether the heartbeat is refreshed or the server is fenced.
+- **Atomic fencing:** `kFenceExpiredServerScript` checks heartbeat absence and that the server state is `ACTIVE`. If the server has published a heartbeat before, membership in the live set identifies it for normal heartbeat-expiry fencing. If it has never heartbeated, the script checks its per-server registration timestamp against the configured first-heartbeat startup timeout. It then changes the state to `DELETING` atomically. Heartbeat refresh and this transition operate in the same per-type Redis Cluster slot, so Redis serializes the competing scripts. Whichever runs first determines whether the heartbeat is refreshed or the server is fenced.
 - **No reactivation or new work:** Once the state is `DELETING`, heartbeat refresh and job creation/transition operations that require an `ACTIVE` server are rejected. Registration also does not reactivate a terminal server ID.
 - **Atomic, repeat-safe cleanup:** `kCleanupExpiredServerScript` rechecks the `DELETING` state and absence of the heartbeat before making changes. Its validation and deletions/counter updates execute in one Lua script. If another manager has already completed Phase A, the script recognizes the completed shape and returns the already-cleaned result rather than decrementing counters again.
 - **Recoverable registry cleanup:** The manager removes the ID from the registry after Phase A reports completion. The retained `DELETING` tombstone and retired sorted-set entry make cleanup interrupted between phases discoverable.
