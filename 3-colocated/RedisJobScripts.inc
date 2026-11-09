@@ -311,10 +311,11 @@ return 1
 )lua";
 
  /**
-  * @brief Merges metadata into one server-ID summary hash.
+  * @brief Merges metadata into one server-ID summary hash and records registration time.
   *
   * KEYS[1] is the server summary hash. ARGV[1] is metadata pair count;
-  * remaining arguments are field/value pairs.
+  * remaining arguments are field/value pairs. The script generates
+  * meta:registeredAt with Redis TIME and preserves it on retries.
   */
 const char* const kSetServerSummaryMetadataScript = R"lua(
 local summaryKey = KEYS[1]
@@ -323,11 +324,18 @@ if keyType ~= 'none' and keyType ~= 'hash' then
   return redis.error_reply('wrong key type')
 end
 local count = tonumber(ARGV[1])
+if not count or count < 0 or count ~= math.floor(count) or
+   #ARGV ~= 1 + count * 2 then
+  return redis.error_reply('invalid server metadata arguments')
+end
 local cursor = 2
 for i = 1, count do
   redis.call('HSET', summaryKey, 'meta:' .. ARGV[cursor], ARGV[cursor + 1])
   cursor = cursor + 2
 end
+local now = redis.call('TIME')
+local nowMs = tonumber(now[1]) * 1000 + math.floor(tonumber(now[2]) / 1000)
+redis.call('HSETNX', summaryKey, 'meta:registeredAt', nowMs)
 return 1
 )lua";
 
@@ -368,10 +376,7 @@ end
 local current = redis.call('HGET', stateKey, ARGV[1])
 if current == 'ACTIVE' then return 1 end
 if current ~= false then return 0 end
-local now = redis.call('TIME')
-local nowMs = tonumber(now[1]) * 1000 + math.floor(tonumber(now[2]) / 1000)
-redis.call('HSET', stateKey, ARGV[1], 'ACTIVE',
-           'registeredAt:' .. ARGV[1], nowMs)
+redis.call('HSET', stateKey, ARGV[1], 'ACTIVE')
 return 1
 )lua";
 
@@ -447,13 +452,14 @@ end
 if current ~= 'ACTIVE' then return 0 end
 
 -- A live-set member has published at least one heartbeat. If it has not,
--- allow startup only until the registration grace period expires. Missing
--- timestamps are legacy/incomplete records and are left untouched rather
--- than guessed at. This check and heartbeat refresh share the type slot.
+-- allow startup only until the registration grace period expires. New
+-- registrations store the Redis-generated timestamp in server metadata;
+-- fall back to the old state-hash field for rolling upgrades.
 local hasHeartbeated = redis.call('SISMEMBER', live, ARGV[1]) == 1
 if not hasHeartbeated then
   local registeredAt = tonumber(redis.call(
-      'HGET', state, 'registeredAt:' .. ARGV[1]) or '')
+      'HGET', serverSummary, 'meta:registeredAt') or
+      redis.call('HGET', state, 'registeredAt:' .. ARGV[1]) or '')
   local timeoutMs = tonumber(ARGV[2])
   if not registeredAt or not timeoutMs or timeoutMs <= 0 then return 0 end
   if redisTimeMs() - registeredAt < timeoutMs then return 0 end
