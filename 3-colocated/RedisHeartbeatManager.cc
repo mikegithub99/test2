@@ -145,6 +145,7 @@ RedisHeartbeatManager::RedisHeartbeatManager(ConfigProvider provider)
       m_config.cleanupLeaseTtlMilliseconds <= 0 ||
       m_config.cleanupLeaseRenewIntervalSeconds <= 0 ||
       m_config.cleanupScanIntervalSeconds <= 0 ||
+      m_config.firstHeartbeatTimeoutSeconds <= 0 ||
       m_config.retiredTombstoneRetentionSeconds <= 0)
   {
     throw std::invalid_argument(
@@ -340,7 +341,9 @@ void RedisHeartbeatManager::scanOnce()
                   serverSummaryKey(type, id),
                   liveKey(type),
                   retiredServersKey(type)};
-              const vector<string> fenceArgs = {id};
+              const vector<string> fenceArgs = {
+                  id,
+                  std::to_string(m_config.firstHeartbeatTimeoutSeconds * 1000)};
 
               const auto fenced = redis.template eval<int64_t>(
                   kFenceExpiredServerScript,
