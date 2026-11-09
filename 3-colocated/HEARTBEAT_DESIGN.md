@@ -62,6 +62,8 @@ If registration completes and the worker never sends its first heartbeat, the cl
 
 The Phase C registry check and per-type collection cannot be one atomic operation because they use different Cluster slots. Safety relies on the unique, never-reused ID and once-only registration contract. Phase C also removes the per-server `registeredAt:<serverId>` field with the state tombstone.
 
+**Upgrade note:** ACTIVE records created before `registeredAt:<serverId>` was added may lack a registration timestamp. The timeout fence deliberately leaves such never-heartbeated records untouched rather than inventing an age. Heartbeated legacy records still expire through the live marker and heartbeat TTL. Audit/reconcile legacy ACTIVE records without a timestamp during rollout.
+
 **Known partial-registration window:** `registerServer()` currently activates per-type state before adding the ID to the global registry. If the process crashes after activation but before registry insertion, the ACTIVE state is not visible to the current registry-driven scanner. The new first-heartbeat timeout handles a registered server that never heartbeats; it does not discover this earlier partial-registration window. This remaining case requires per-type state scanning or an explicit staged registration/reconciliation protocol. It cannot be solved by a Lua script spanning both Cluster slots. Do not claim that all partial registration crashes are automatically recovered.
 
 
