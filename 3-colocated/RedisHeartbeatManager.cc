@@ -406,6 +406,23 @@ void RedisHeartbeatManager::scanOnce()
               }
             }
 
+            // Backfill tombstones left by an older two-phase deployment.
+            // HSCAN is incremental; repeated scans safely cover concurrent changes.
+            const vector<string> indexKeys = {
+                stateKey(type), retiredServersKey(type)};
+            string cursor = "0";
+            do
+            {
+              renewIfNeeded();
+              const vector<string> indexArgs = {cursor};
+              cursor = redis.template eval<string>(
+                  kIndexUntrackedTombstonesScript,
+                  indexKeys.begin(),
+                  indexKeys.end(),
+                  indexArgs.begin(),
+                  indexArgs.end());
+            } while (cursor != "0");
+
             // Phase C candidates are discovered from the retired index because
             // Phase B has already removed their IDs from the registry set.
             renewIfNeeded();

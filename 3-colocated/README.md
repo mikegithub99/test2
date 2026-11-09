@@ -184,6 +184,8 @@ Cleanup is a three-phase protocol across the Redis Cluster slot boundary:
 
 The retired timestamp is written atomically with the `ACTIVE → DELETING` transition, so a crash cannot leave a newly fenced tombstone without a Phase C discovery record. Redis hashes have no per-field TTL; Phase C explicitly removes one hash field rather than expiring the whole state hash.
 
+**Upgrade from the two-phase version:** older deployments may already have `DELETING` fields whose IDs were removed from the registry before the retired sorted set existed. Each cleanup scan incrementally HSCANs the per-type state hash and backfills missing retired-index entries with Redis time using `ZADD NX`. Those legacy tombstones therefore receive a fresh full retention window after upgrade; existing timestamps are preserved. This migration is idempotent and runs in the per-type slot.
+
 **Registration invariant required by Phase C:** each server ID is globally unique, never reused, and `registerServer()` is called exactly once for it during startup. No delayed or retried startup registration may resume after retirement. The registration API can initialize a missing state field, so this non-replayable startup contract prevents a Phase C-collected ID from being recreated as `ACTIVE`. Heartbeat and job lifecycle scripts do not initialize missing state. Register before the first heartbeat and do not call registration again for that ID.
 
 The registry membership check and Phase C Lua script cannot be one atomic operation because they use different Redis Cluster slots. The once-only registration invariant makes the check stable: after Phase B removes membership, no code path may add that ID again. Phase C still checks all per-type safety conditions atomically.

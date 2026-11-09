@@ -656,6 +656,28 @@ return redis.call('DEL', key)
 )lua";
 
 
+// Backfill tombstones created before the retired sorted set was deployed.
+// HSCAN is incremental; ZADD NX preserves any existing original retirement time.
+const char* const kIndexUntrackedTombstonesScript = R"lua(
+local state = KEYS[1]
+local retired = KEYS[2]
+local st, rt = redis.call('TYPE', state).ok, redis.call('TYPE', retired).ok
+if st ~= 'hash' or (rt ~= 'none' and rt ~= 'zset') then
+  return redis.error_reply('wrong legacy tombstone index key type')
+end
+local cursor = ARGV[1]
+local result = redis.call('HSCAN', state, cursor, 'COUNT', 256)
+local now = redis.call('TIME')
+local nowMs = tonumber(now[1]) * 1000 + math.floor(tonumber(now[2]) / 1000)
+local fields = result[2]
+for i = 1, #fields, 2 do
+  if fields[i + 1] == 'DELETING' then
+    redis.call('ZADD', retired, 'NX', nowMs, fields[i])
+  end
+end
+return result[1]
+)lua";
+
 // Phase C candidate discovery uses Redis TIME to avoid host clock skew.
 const char* const kListExpiredServerTombstonesScript = R"lua(
 local retired = KEYS[1]
