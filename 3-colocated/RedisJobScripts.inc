@@ -683,9 +683,17 @@ const char* const kIndexUntrackedTombstonesScript = R"lua(
 local state = KEYS[1]
 local retired = KEYS[2]
 local st, rt = redis.call('TYPE', state).ok, redis.call('TYPE', retired).ok
-if st ~= 'hash' or (rt ~= 'none' and rt ~= 'zset') then
+if (st ~= 'none' and st ~= 'hash') or
+   (rt ~= 'none' and rt ~= 'zset') then
   return redis.error_reply('wrong legacy tombstone index key type')
 end
+
+-- Phase C may have removed the last state field, causing Redis to delete the
+-- now-empty hash. An absent state hash has no legacy tombstones to backfill.
+if st == 'none' then
+  return '0'
+end
+
 local cursor = ARGV[1]
 local result = redis.call('HSCAN', state, cursor, 'COUNT', 256)
 local now = redis.call('TIME')
