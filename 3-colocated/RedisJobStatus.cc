@@ -148,6 +148,11 @@ bool isReservedServerTypeMetadataField(const string& field)
          field == kCreatedByServerIdMetadataField;
 }
 
+bool isReservedServerMetadataField(const string& field)
+{
+  return field == "registeredAt";
+}
+
 // Append a count followed by accepted field/value pairs. The predicate keeps
 // metadata policy at the call site while this helper owns the Lua wire format.
 template <typename IncludeField>
@@ -435,26 +440,14 @@ void RedisJobStatus::registerServer(
   }
   for (const auto& item : serverMetadata)
   {
-    if (item.first.empty())
+    if (item.first.empty() || isReservedServerMetadataField(item.first))
     {
-      throw invalid_argument("RedisJobStatus: server metadata field must not be empty");
+      throw invalid_argument(
+          "RedisJobStatus: empty or reserved server metadata field");
     }
   }
   const KeyList keys = {kServerTypesKey, serverRegistryKey(m_serverType)};
   const ArgList args = {m_serverType, m_serverId};
-
-  // Establish the per-type lifecycle state first. A DELETING or otherwise
-  // terminal identity is never reactivated; process IDs are never reused.
-  const KeyList stateKeys = {serverStateKey(m_serverType)};
-  const ArgList stateArgs = {m_serverId};
-  const auto activation = m_client->execute([&](auto& redis)
-  {
-    return evalResult(redis, kActivateServerScript, stateKeys, stateArgs);
-  });
-  if (activation != 1)
-  {
-    throw runtime_error("RedisJobStatus: serverId is already fenced and cannot be reactivated");
-  }
 
   // Both registry keys share the {registry} hash tag, so one script can
   // update them atomically in standalone Redis and Redis Cluster.
@@ -496,6 +489,21 @@ void RedisJobStatus::registerServer(
         return evalResult(
             redis, kSetServerSummaryMetadataScript, serverKeys, serverArgs);
       });
+
+  // Publish ACTIVE only after registry membership and both metadata hashes
+  // are initialized. This is the final registration step. A terminal identity
+  // is never reactivated; process IDs are globally unique and never reused.
+  const KeyList stateKeys = {serverStateKey(m_serverType)};
+  const ArgList stateArgs = {m_serverId};
+  const auto activation = m_client->execute([&](auto& redis)
+  {
+    return evalResult(redis, kActivateServerScript, stateKeys, stateArgs);
+  });
+  if (activation != 1)
+  {
+    throw runtime_error(
+        "RedisJobStatus: serverId is already fenced and cannot be reactivated");
+  }
 
   // Heartbeat publication is deliberately not started here. The worker
   // process owns its refresh schedule and calls refreshHeartbeat() explicitly.
