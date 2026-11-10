@@ -71,7 +71,7 @@ A server that registers but never sends its first heartbeat is handled by the 60
 The word *durability* needs qualification here:
 
 - **Within a live Redis primary:** Lua scripts provide atomic execution relative to other commands. Preflight validation avoids known counter underflow, overflow, malformed-value, and stale-index failure cases before mutation.
-- **Across worker process restarts:** live Redis job state and counters remain available. A restarted worker must use a new globally unique server ID; server IDs are never reused. A retired ID remains fenced and is not a supported identity for a new process.
+- **Across worker process restarts:** live Redis job state and counters remain available. Each process incarnation should use a fresh globally unique, type-prefixed server ID. Same-type reuse is technically possible after Phase C removes the tombstone, but is not recommended.
 - **Across Redis restart, data loss, or failover:** this code does not itself guarantee persistence of acknowledged writes. It does not configure Redis RDB/AOF, replication, `WAIT`, or `WAITAOF`. Actual survival depends on the Redis deployment's persistence and replication settings. If Redis loses the live keys, the transient counters and job state are lost too.
 - **Historical accounting:** this is not an audit ledger. Completed jobs are deleted, retired server summaries are deleted in Phase A, and old tombstones are eventually removed in Phase C. There is no replay/rebuild mechanism in this implementation that can reconstruct historical totals after Redis data loss.
 
@@ -102,7 +102,7 @@ Phase A cleanup currently passes all of one server's job references and job keys
 
 ## Constraints and failure cases to operate explicitly
 
-1. **Unique, never-reused process IDs are mandatory.** A process restart must receive a new server ID. Reusing an ID after it has been fenced is unsupported.
+1. **Type-prefixed globally unique process IDs are mandatory.** The prefix prevents collisions between server types. A process restart should receive a fresh ID; same-type reuse is technically possible only after Phase C removes the tombstone.
 2. **Registration is not globally atomic across Cluster slots.** Registry insertion is in the `{registry}` slot while activation is in the `{serverType}` slot. A crash between them can leave a stale registry member without per-type state. The scanner skips it; reconciliation is required. The final activation ordering prevents an ACTIVE server from being invisible to registry-driven scanning, but it cannot eliminate this partial-registration case.
 3. **Redis loss is not repaired from an external source.** If Redis is flushed or loses data, the implementation does not rebuild in-flight jobs/counters from the workers.
 4. **Cleanup is eventual, not immediate.** Heartbeat expiry plus scan cadence governs detection. A graceful stop still waits for expiry under the current API.
@@ -128,4 +128,4 @@ The design is coherent for the stated transient-counter use case, but the source
 
 For roughly 100 servers that start and stop in changing subsets, the implementation is **well-shaped for transient live counters**: lifecycle changes are serialized per server type, aggregate counters are updated atomically with job state, stale workers are fenced before cleanup, and cleanup retries are designed not to double-decrement.
 
-The main qualifications are not a basic flaw in the counter algorithm. They are the intentional single-primary-per-type throughput boundary, eventual heartbeat-based stop detection, the requirement for unique non-reused server IDs, the non-atomic cross-slot registration workflow, and the absence of a Redis data-loss rebuild mechanism. With those constraints accepted and the fleet/load/failure tests above passed, the design is appropriate for the stated purpose.
+The main qualifications are not a basic flaw in the counter algorithm. They are the intentional single-primary-per-type throughput boundary, eventual heartbeat-based stop detection, the requirement for type-prefixed globally unique server IDs, the non-atomic cross-slot registration workflow, and the absence of a Redis data-loss rebuild mechanism. With those constraints accepted and the fleet/load/failure tests above passed, the design is appropriate for the stated purpose.
