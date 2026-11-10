@@ -371,8 +371,7 @@ const char* const KSetServerSummaryMetaScript = kSetServerSummaryMetadataScript;
 
 const char* const kRegisterServerScript = R"lua(
 local serverTypesKey = KEYS[1]
-local allServerIdsKey = KEYS[2]
-local typeServersKey = KEYS[3]
+local typeServersKey = KEYS[2]
 
 local function validtype(key)
   local t = redis.call('TYPE', key).ok
@@ -389,20 +388,15 @@ end
 local serverType = ARGV[1]
 local serverId = ARGV[2]
 
--- The permanent ID set enforces global uniqueness for all registrations
--- made with this script. Also inspect existing per-type registries so IDs
--- registered before this set was introduced are protected during upgrade.
-if redis.call('SISMEMBER', allServerIdsKey, serverId) == 1 then
-  return 0
-end
+-- Check every currently registered type registry atomically. Retired IDs
+-- are additionally checked against per-type state tombstones by registerServer()
+-- before this registry-slot script runs.
 for i = 3, #KEYS do
   if redis.call('SISMEMBER', KEYS[i], serverId) == 1 then
     return 0
   end
 end
 
--- Reserve the ID permanently before publishing ordinary registry membership.
-redis.call('SADD', allServerIdsKey, serverId)
 redis.call('SADD', serverTypesKey, serverType)
 redis.call('SADD', typeServersKey, serverId)
 return 1
