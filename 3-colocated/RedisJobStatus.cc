@@ -84,6 +84,8 @@ string serverRegistryKey(const string& serverType)
 }
 
 const string kServerTypesKey = "servers:{registry}:types";
+// Permanent reservation set: server IDs are globally unique and never reused.
+const string kServerIdsKey = "servers:{registry}:ids";
 
 string heartbeatKey(
     const string& serverType,
@@ -465,16 +467,38 @@ void RedisJobStatus::registerServer(
           "RedisJobStatus: empty or reserved server metadata field");
     }
   }
-  const KeyList keys = {kServerTypesKey, serverRegistryKey(m_serverType)};
-  const ArgList args = {m_serverType, m_serverId};
+  // Discover existing type registries so the script can also detect IDs
+  // registered before the permanent global-ID set was introduced.
+  const auto registrationResult = m_client->execute([&](auto& redis)
+  {
+    vector<string> registeredTypes;
+    redis.smembers(kServerTypesKey, back_inserter(registeredTypes));
 
-  // Both registry keys share the {registry} hash tag, so one script can
-  // update them atomically in standalone Redis and Redis Cluster.
-  m_client->execute(
-      [&](auto& redis)
+    KeyList keys = {kServerTypesKey, kServerIdsKey,
+                    serverRegistryKey(m_serverType)};
+    for (const auto& registeredType : registeredTypes)
+    {
+      const auto key = serverRegistryKey(registeredType);
+      if (std::find(keys.begin() + 2, keys.end(), key) == keys.end())
       {
-        return evalResult(redis, kRegisterServerScript, keys, args);
-      });
+        keys.push_back(key);
+      }
+    }
+
+    // Every key uses {registry}; duplicate detection and permanent ID
+    // reservation therefore happen atomically in Redis Cluster as well.
+    const ArgList args = {m_serverType, m_serverId};
+    return evalResult(redis, kRegisterServerScript, keys, args);
+  });
+  if (registrationResult == 0)
+  {
+    throw runtime_error(
+        "RedisJobStatus: serverId has already been registered and cannot be reused");
+  }
+  if (registrationResult != 1)
+  {
+    throw runtime_error("RedisJobStatus: unexpected server registration result");
+  }
 
   // Initialize type metadata independently: the registry keys use the
   // {registry} hash tag, while this summary key uses {serverType}. Keeping
