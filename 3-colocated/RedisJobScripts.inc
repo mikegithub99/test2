@@ -379,47 +379,24 @@ end
 
 local serverType = ARGV[1]
 local serverId = ARGV[2]
-local registryTypeCount = tonumber(ARGV[3])
-if not registryTypeCount or registryTypeCount < 1 or
-   registryTypeCount ~= math.floor(registryTypeCount) or
-   #KEYS ~= registryTypeCount + 1 or
-   #ARGV ~= registryTypeCount + 3 then
-  return redis.error_reply('invalid registration key arguments')
-end
 
--- Every registry key the script may inspect is explicitly supplied in KEYS.
--- ARGV[4..] gives the type corresponding to KEYS[2..].
+-- The global type set and every dynamically derived registry key share the
+-- {registry} hash tag. Redis serializes this script, so the discovered type
+-- list and duplicate scan/insertion form one atomic registry-slot operation.
+if not validtype(serverTypesKey) then
+  return redis.error_reply('wrong server-types key type')
+end
+local registeredTypes = redis.call('SMEMBERS', serverTypesKey)
 local registryKeysByType = {}
-for i = 1, registryTypeCount do
-  local registeredType = ARGV[3 + i]
-  local registryKey = KEYS[1 + i]
-  if not registeredType or registeredType == '' or
-     registryKey ~= 'servers:{registry}:type:' .. registeredType or
-     registryKeysByType[registeredType] then
-    return redis.error_reply('invalid registration registry-key mapping')
+for _, registeredType in ipairs(registeredTypes) do
+  if registeredType == '' then
+    return redis.error_reply('empty registered server type')
+  end
+  local registryKey = 'servers:{registry}:type:' .. registeredType
+  if not validtype(registryKey) then
+    return redis.error_reply('wrong server registry key type')
   end
   registryKeysByType[registeredType] = registryKey
-end
-if not registryKeysByType[serverType] then
-  return redis.error_reply('current server type missing from registration keys')
-end
-
--- All declared keys share {registry}; validate them before any write.
-for i = 1, #KEYS do
-  if not validtype(KEYS[i]) then
-    return redis.error_reply('wrong key type')
-  end
-end
-
--- The C++ caller supplies a snapshot of known types. If another registration
--- added a type after that snapshot, ask C++ to refresh the list and retry.
--- Redis serializes this script, so the set cannot change between this check
--- and the duplicate scan/write below.
-local registeredTypes = redis.call('SMEMBERS', serverTypesKey)
-for _, registeredType in ipairs(registeredTypes) do
-  if not registryKeysByType[registeredType] then
-    return 2 -- caller must refresh the type list and retry
-  end
 end
 
 for _, registeredType in ipairs(registeredTypes) do
@@ -428,8 +405,12 @@ for _, registeredType in ipairs(registeredTypes) do
   end
 end
 
+local currentTypeKey = 'servers:{registry}:type:' .. serverType
+if not validtype(currentTypeKey) then
+  return redis.error_reply('wrong current server registry key type')
+end
 redis.call('SADD', serverTypesKey, serverType)
-redis.call('SADD', registryKeysByType[serverType], serverId)
+redis.call('SADD', currentTypeKey, serverId)
 return 1
 )lua";
 
