@@ -471,48 +471,34 @@ void RedisJobStatus::registerServer(
   // before the separate atomic registry-slot operation.
   const auto registrationResult = m_client->execute([&](auto& redis)
   {
-    // State hashes occupy separate per-type slots, so check them in C++ before
-    // the registry-slot operation. Retry if a concurrent registration adds a
-    // type after this snapshot; the Lua script detects that race atomically.
-    for (int attempt = 0; attempt < 8; ++attempt)
+    // State hashes occupy separate per-type slots, so check known types in
+    // C++ before the registry-slot operation. Lua independently discovers
+    // the current registry types and checks every corresponding registry set
+    // atomically, so concurrent additions cannot cause a bounded retry failure.
+    vector<string> registeredTypes;
+    redis.smembers(kServerTypesKey, back_inserter(registeredTypes));
+    if (std::find(registeredTypes.begin(), registeredTypes.end(), m_serverType) ==
+        registeredTypes.end())
     {
-      vector<string> registeredTypes;
-      redis.smembers(kServerTypesKey, back_inserter(registeredTypes));
-      if (std::find(registeredTypes.begin(), registeredTypes.end(), m_serverType) ==
-          registeredTypes.end())
-      {
-        registeredTypes.push_back(m_serverType);
-      }
-      std::sort(registeredTypes.begin(), registeredTypes.end());
-      registeredTypes.erase(
-          std::unique(registeredTypes.begin(), registeredTypes.end()),
-          registeredTypes.end());
+      registeredTypes.push_back(m_serverType);
+    }
+    std::sort(registeredTypes.begin(), registeredTypes.end());
+    registeredTypes.erase(
+        std::unique(registeredTypes.begin(), registeredTypes.end()),
+        registeredTypes.end());
 
-      for (const auto& registeredType : registeredTypes)
+    for (const auto& registeredType : registeredTypes)
+    {
+      string existingState;
+      if (redis.hget(serverStateKey(registeredType), m_serverId, existingState))
       {
-        string existingState;
-        if (redis.hget(serverStateKey(registeredType), m_serverId, existingState))
-        {
-          return int64_t{0};
-        }
-      }
-
-      KeyList keys = {kServerTypesKey};
-      ArgList args = {m_serverType, m_serverId,
-                      std::to_string(registeredTypes.size())};
-      for (const auto& registeredType : registeredTypes)
-      {
-        keys.push_back(serverRegistryKey(registeredType));
-        args.push_back(registeredType);
-      }
-
-      const auto result = evalResult(redis, kRegisterServerScript, keys, args);
-      if (result != 2) // 2 means the registry type snapshot became stale
-      {
-        return result;
+        return int64_t{0};
       }
     }
-    return int64_t{-1}; // too many concurrent type additions; caller can retry
+
+    const KeyList keys = {kServerTypesKey};
+    const ArgList args = {m_serverType, m_serverId};
+    return evalResult(redis, kRegisterServerScript, keys, args);
   });
   if (registrationResult == 0)
   {
