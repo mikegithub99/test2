@@ -403,7 +403,16 @@ if (stateType ~= 'none' and stateType ~= 'hash') or
   return redis.error_reply('wrong activation key type')
 end
 local current = redis.call('HGET', stateKey, ARGV[1])
-if current == 'ACTIVE' then return 1 end
+if current == 'ACTIVE' then
+  -- Backfill ACTIVE servers created before registeredAt metadata was added.
+  -- HSETNX preserves the original timestamp whenever it already exists.
+  if not redis.call('HGET', serverSummaryKey, 'meta:registeredAt') then
+    local now = redis.call('TIME')
+    local nowMs = tonumber(now[1]) * 1000 + math.floor(tonumber(now[2]) / 1000)
+    redis.call('HSETNX', serverSummaryKey, 'meta:registeredAt', nowMs)
+  end
+  return 1
+end
 if current ~= false then return 0 end
 local now = redis.call('TIME')
 local nowMs = tonumber(now[1]) * 1000 + math.floor(tonumber(now[2]) / 1000)
