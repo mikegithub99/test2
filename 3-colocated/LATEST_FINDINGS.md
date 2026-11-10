@@ -2,22 +2,21 @@
 
 **Audit date:** 2026-11-10  
 **Audited branch:** `main`  
-**Audited commit:** updated by the SISMEMBER fix commit  
 **Scope:** All files under `3-colocated`, including the C++ Redis client/status/heartbeat implementation, embedded Lua scripts, browser/admin utility, command-line utilities, and design documentation.
 
 This is an independent source review. It is not a build, runtime, Redis, or Redis Cluster test. Findings below distinguish concrete defects from assumptions and known operational limitations.
 
 ## Executive summary
 
-The overall design has a clear separation between the global `{registry}` slot and per-type `{serverType}` slots, and the registration Lua script now declares its accessed keys explicitly. The audit did identify correctness and recovery gaps that should be addressed before treating the implementation as production-ready.
+The overall design has a clear separation between the global `{registry}` slot and per-type `{serverType}` slots, and the registration Lua script declares its accessed keys explicitly. The audit identified correctness and recovery gaps that should be addressed before treating the implementation as production-ready.
 
 | Priority | Finding |
 |---|---|
 | High | Whole-type browser deletion races with concurrent worker registration |
-| Fixed | Lua membership validation used incorrect truthiness checks (F-02; fixed in this update) |
+| Fixed | Lua membership validation used incorrect truthiness checks (F-02) |
 | Medium | Type-prefixed server-ID uniqueness is assumed but not enforced at the C++ boundary |
 | Medium | Registration can leave an undiscoverable, permanently stale registry entry after a partial failure |
-| Medium | Redis reset utility omits per-type live-server sets |
+| Fixed | Redis reset utility omitted per-type live-server sets (F-05; fixed in this update) |
 | Low | Browser whole-type deletion does not discover orphan heartbeat keys |
 | Informational | Legacy ACTIVE records without registration timestamps are intentionally not auto-expired |
 
@@ -39,7 +38,7 @@ The browser enumerates the type's current server IDs, deletes those instances, c
 
 A concurrent registration can therefore add a new registry member and initialize per-type data after the browser's initial enumeration. The browser can subsequently delete that new worker's state/summary keys and registry membership, or delete the registry set after the worker has added itself. The result can be a worker that believes registration succeeded but is no longer discoverable, or an ACTIVE worker whose lifecycle state was deleted.
 
-The per-server DELETING tombstone protects deletion of one known server ID. It does not prevent a *different* ID from registering while the entire type is being removed.
+The per-server DELETING tombstone protects deletion of one known server ID. It does not prevent a different ID from registering while the entire type is being removed.
 
 **Recommendation**
 
@@ -52,7 +51,7 @@ Introduce a type-level lifecycle state (for example, ACTIVE/DELETING) in a key w
 - `RedisJobScripts.inc` — `kTransitionScript`
 - `RedisJobScripts.inc` — `kCompleteScript`
 
-**Problem (now fixed)**
+**Problem (fixed)**
 
 These scripts previously tested the numeric result of Redis `SISMEMBER` using Lua's `not` operator. Redis returns integer `0` or `1`, and Lua treats numeric zero as truthy. As a result, a missing membership was not rejected by the intended integrity check.
 
@@ -104,25 +103,23 @@ The cleanup fence script returns without fencing when the state field is neither
 
 Add a durable registration phase that can be recognized and safely recovered (for example, a PENDING registration state with a bounded lease/timeout), or add a reconciliation routine that distinguishes incomplete registration from a live server and repairs/removes it safely. A best-effort C++ rollback on exceptions can reduce ordinary failure residue but is not sufficient for process crashes. Document the manual repair procedure until automated recovery exists.
 
-### F-05 — Medium: Redis reset utility omits live-server sets
+### F-05 — Fixed: Redis reset utility omitted live-server sets
 
 **Location**
 
-- `util/RedisJobStatusCleanup.cc:14-28`
+- `util/RedisJobStatusCleanup.cc` — `redisJobStatusPatterns()`
 
-**Problem**
+**Problem (fixed)**
 
-The reset utility's key patterns include the registry, summaries, jobs, heartbeats, state hashes, retired indexes, and cleanup lease, but omit:
+The reset utility's key patterns included the registry, summaries, jobs, heartbeats, state hashes, retired indexes, and cleanup lease, but omitted `servers:live:{*}`. Consequently, stale live-server set membership could survive a reset. If the same server ID were reused, heartbeat fencing could mistake that membership for evidence of a prior heartbeat and fence the new process when its heartbeat key was absent.
 
-```
-servers:live:{*}
-```
+**Fix applied**
 
-The utility therefore does not remove all Redis Job Status keys, despite reporting that it found the Redis Job Status keyspace. Old live-set membership can survive a reset. If the same server ID is reused after a reset, the heartbeat fence script can interpret that stale membership as evidence that the new process has heartbeated and fence it as soon as its heartbeat key is absent.
+Added `servers:live:{*}` to the reset utility's SCAN patterns. Both dry-run listing and confirmed `--delete` mode use the same pattern list, so live-server set keys are now included in the discovered key set.
 
-**Recommendation**
+**Regression coverage still recommended**
 
-Add `servers:live:{*}` to the reset patterns and add a test that seeds one key of every documented key family, runs the dry-run discovery, and verifies that the deletion mode finds all of them.
+Add a test that seeds one key of every documented key family, runs dry-run discovery, and verifies that deletion mode finds all of them. No Redis runtime test was performed as part of this change.
 
 ### F-06 — Low: Whole-type browser deletion does not discover orphan heartbeat keys
 
@@ -152,7 +149,7 @@ This is a deliberate fail-safe behavior, but it should remain part of deployment
 
 ## Consistency and design checks that passed at source level
 
-- The registration Lua script now receives both registry keys explicitly and does not derive or discover additional Redis keys.
+- The registration Lua script receives both registry keys explicitly and does not derive or discover additional Redis keys.
 - The two registration Lua keys use the same `{registry}` hash tag.
 - Job lifecycle scripts use the per-type key builders, and the lifecycle key list places the server state hash at `KEYS[6]`, matching the Lua scripts.
 - The composite job reference uses a byte-length prefix in C++; the Python browser uses UTF-8 byte length, so the two implementations agree for non-ASCII server IDs.
@@ -161,7 +158,7 @@ This is a deliberate fail-safe behavior, but it should remain part of deployment
 
 ## Validation not performed
 
-No C++ compilation, Python test run, Lua execution, standalone Redis test, or Redis Cluster test was performed as part of this audit. In particular, the findings above should be converted into regression tests before the next deployment. The repository directory contains no dedicated automated test suite for these C++/Lua lifecycle and admin workflows.
+No C++ compilation, Python test run, Lua execution, standalone Redis test, or Redis Cluster test was performed as part of this audit or the fixes documented here. In particular, the findings above should be converted into regression tests before the next deployment. The repository directory contains no dedicated automated test suite for these C++/Lua lifecycle and admin workflows.
 
 Recommended minimum regression coverage:
 
