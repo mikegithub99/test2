@@ -489,17 +489,10 @@ void RedisJobStatus::registerServer(
     }
 
     KeyList keys = {kServerTypesKey, serverRegistryKey(m_serverType)};
-    for (const auto& registeredType : registeredTypes)
-    {
-      const auto key = serverRegistryKey(registeredType);
-      if (std::find(keys.begin() + 1, keys.end(), key) == keys.end())
-      {
-        keys.push_back(key);
-      }
-    }
 
-    // All registry keys use {registry}; concurrent registrations are checked
-    // atomically against every known per-type registry in this Lua script.
+    // The Lua script discovers all known per-type registries atomically from
+    // servers:{registry}:types, avoiding a stale C++ snapshot during concurrent
+    // registrations of the same ID under different newly-created types.
     const ArgList args = {m_serverType, m_serverId};
     return evalResult(redis, kRegisterServerScript, keys, args);
   });
