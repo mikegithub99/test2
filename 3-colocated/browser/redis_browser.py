@@ -32,6 +32,22 @@ def counter_values(summary: dict[str, str]) -> tuple[str, str, str, str]:
         for name in ("pending", "active", "suspended", "total")
     )
 
+def format_metadata(metadata: dict[str, str]) -> dict[str, str]:
+    """Render Redis-millisecond registeredAt as a readable UTC timestamp."""
+    formatted = dict(metadata)
+    value = formatted.get("registeredAt")
+    if value is not None:
+        try:
+            milliseconds = int(value)
+            formatted["registeredAt"] = (
+                datetime.fromtimestamp(milliseconds / 1000, tz=__import__("datetime").timezone.utc)
+                .isoformat(timespec="milliseconds")
+                .replace("+00:00", "Z")
+            )
+        except (ValueError, OverflowError, OSError):
+            pass
+    return formatted
+
 
 class JobDetailsScreen(ModalScreen[None]):
     """Modal view of every field stored in a selected job hash."""
@@ -180,7 +196,7 @@ class RedisBrowser(App):
             type_key = f"summary:type:{{{server_type}}}"
             type_hash = self.client.hgetall(type_key)
             type_counters = counter_values(type_hash)
-            type_metadata = {k[5:]: v for k, v in type_hash.items() if k.startswith("meta:")}
+            type_metadata = format_metadata({k[5:]: v for k, v in type_hash.items() if k.startswith("meta:")})
             server_set_key = f"servers:{{registry}}:type:{server_type}"
             server_ids = sorted(self.client.smembers(server_set_key))
             rows.append((
@@ -192,7 +208,7 @@ class RedisBrowser(App):
                 server_key = f"summary:server:{{{server_type}}}:{server_id}"
                 server_hash = self.client.hgetall(server_key)
                 server_counters = counter_values(server_hash)
-                server_metadata = {k[5:]: v for k, v in server_hash.items() if k.startswith("meta:")}
+                server_metadata = format_metadata({k[5:]: v for k, v in server_hash.items() if k.startswith("meta:")})
                 jobs_set_key = f"jobs:server:{{{server_type}}}:{server_id}"
                 references = sorted(self.client.smembers(jobs_set_key))
                 rows.append((
@@ -405,63 +421,207 @@ class RedisBrowser(App):
             if self.status is not None:
                 self.status.update(f"Delete failed: {exc}")
 
+    @staticmethod
+    def _eval_checked(client, script: str, keys: list[str], args: list[str], operation: str) -> int:
+        """Run one atomic Lua operation and turn Redis errors into clear failures."""
+        result = client.eval(script, len(keys), *(keys + args))
+        if isinstance(result, bytes):
+            result = result.decode()
+        if isinstance(result, str) and result.startswith("ERR"):
+            raise RuntimeError(f"{operation}: {result}")
+        return int(result)
+
     def _delete_job(self, job_key: str, metadata: dict[str, str]) -> None:
-        server_type, server_id = metadata.get("serverType"), metadata.get("serverId")
-        state = metadata.get("status", "").lower()
-        if not server_type or not server_id or state not in {"pending", "active", "suspended"}:
+        # The row may be stale. The script reads the current status and owner,
+        # validates both indexes and all four counters, then mutates atomically.
+        server_type = metadata.get("serverType")
+        server_id = metadata.get("serverId")
+        job_id = metadata.get("jobId")
+        if not server_type or not server_id or job_id is None:
             raise ValueError("Job metadata incomplete; refusing deletion.")
-        prefix = f"job:{{{server_type}}}:"
-        if not job_key.startswith(prefix):
-            raise ValueError("Job key does not match its metadata.")
-        reference = job_key[len(prefix):]
-        if not self.client.exists(job_key):
+        reference = f"{len(server_id)}:{server_id}:{job_id}"
+        expected_key = f"job:{{{server_type}}}:{reference}"
+        if job_key != expected_key:
+            raise ValueError("Job key does not match its stored identity.")
+
+        script = r"""
+local job, typeJobs, serverJobs = KEYS[1], KEYS[2], KEYS[3]
+local typeSummary, serverSummary, state = KEYS[4], KEYS[5], KEYS[6]
+local function typ(k) return redis.call('TYPE', k).ok end
+local function valid(k, t) local v=typ(k); return v=='none' or v==t end
+if typ(state) ~= 'hash' then return 4 end
+if redis.call('HGET', state, ARGV[3]) ~= 'ACTIVE' then return 7 end
+if typ(job) ~= 'hash' or not valid(typeJobs,'set') or
+   not valid(serverJobs,'set') or typ(typeSummary) ~= 'hash' or
+   typ(serverSummary) ~= 'hash' then return 4 end
+local status=redis.call('HGET',job,'status')
+if redis.call('HGET',job,'serverType') ~= ARGV[2] or
+   redis.call('HGET',job,'serverId') ~= ARGV[3] or
+   redis.call('HGET',job,'jobId') ~= ARGV[1] then return 4 end
+if status ~= 'PENDING' and status ~= 'ACTIVE' and status ~= 'SUSPENDED' then return 4 end
+if redis.call('SISMEMBER',typeJobs,ARGV[4]) ~= 1 or
+   redis.call('SISMEMBER',serverJobs,ARGV[4]) ~= 1 then return 4 end
+local field=string.lower(status)
+local max='9223372036854775807'
+local function positive(k,f)
+  local raw=redis.call('HGET',k,f) or '0'
+  if not string.match(raw,'^%d+$') then return false end
+  local n=string.gsub(raw,'^0+',''); if n=='' then n='0' end
+  return n~='0' and (#n < #max or (#n == #max and n <= max))
+end
+if not positive(typeSummary,field) or not positive(typeSummary,'total') or
+   not positive(serverSummary,field) or not positive(serverSummary,'total') then return 4 end
+redis.call('HINCRBY',typeSummary,field,-1)
+redis.call('HINCRBY',typeSummary,'total',-1)
+redis.call('HINCRBY',serverSummary,field,-1)
+redis.call('HINCRBY',serverSummary,'total',-1)
+redis.call('SREM',typeJobs,ARGV[4])
+redis.call('SREM',serverJobs,ARGV[4])
+redis.call('DEL',job)
+return 0
+"""
+        keys = [
+            job_key,
+            f"jobs:type:{{{server_type}}}",
+            f"jobs:server:{{{server_type}}}:{server_id}",
+            f"summary:type:{{{server_type}}}",
+            f"summary:server:{{{server_type}}}:{server_id}",
+            f"servers:state:{{{server_type}}}",
+        ]
+        result = self._eval_checked(
+            self.client, script, keys,
+            [job_id, server_type, server_id, reference], "Delete job"
+        )
+        if result == 2:
             return
-        for summary in (f"summary:type:{{{server_type}}}", f"summary:server:{{{server_type}}}:{server_id}"):
-            if self.client.exists(summary):
-                self.client.hincrby(summary, state, -1)
-                self.client.hincrby(summary, "total", -1)
-        self.client.srem(f"jobs:type:{{{server_type}}}", reference)
-        self.client.srem(f"jobs:server:{{{server_type}}}:{server_id}", reference)
-        self.client.delete(job_key)
+        if result == 7:
+            raise RuntimeError("Server is not ACTIVE; its cleanup lifecycle owns this job.")
+        if result != 0:
+            raise RuntimeError(f"Delete job rejected: inconsistent Redis data (code {result}).")
 
     def _delete_server(self, summary_key: str) -> None:
+        """Force-fence and clean one server atomically in its per-type slot."""
         prefix = "summary:server:{"
         if not summary_key.startswith(prefix) or "}:" not in summary_key:
             raise ValueError("Invalid server summary key.")
         server_type, server_id = summary_key[len(prefix):].split("}:", 1)
-        server_jobs, type_jobs = f"jobs:server:{{{server_type}}}:{server_id}", f"jobs:type:{{{server_type}}}"
+        state = f"servers:state:{{{server_type}}}"
+        heartbeat = f"heartbeat:server:{{{server_type}}}:{server_id}"
+        server_jobs = f"jobs:server:{{{server_type}}}:{server_id}"
+        type_jobs = f"jobs:type:{{{server_type}}}"
+        server_summary = summary_key
         type_summary = f"summary:type:{{{server_type}}}"
-        counts = {"pending": 0, "active": 0, "suspended": 0, "total": 0}
-        for reference in list(self.client.smembers(server_jobs)):
-            job_key = f"job:{{{server_type}}}:{reference}"
-            state = self.client.hget(job_key, "status")
-            if state and state.lower() in counts:
-                counts[state.lower()] += 1
-                counts["total"] += 1
-            self.client.delete(job_key)
-            self.client.srem(type_jobs, reference)
-        if self.client.exists(type_summary):
-            for field, amount in counts.items():
-                if amount:
-                    self.client.hincrby(type_summary, field, -amount)
-        self.client.delete(server_jobs, summary_key, f"heartbeat:server:{{{server_type}}}:{server_id}")
-        self.client.hdel(f"servers:state:{{{server_type}}}", server_id)
+        live = f"servers:live:{{{server_type}}}"
+        retired = f"servers:retired:{{{server_type}}}"
+
+        # This is the administrative equivalent of Phase A. Unlike expiry
+        # cleanup it deliberately bypasses heartbeat eligibility, but it uses
+        # the same per-type-slot fence, complete preflight, accounting and
+        # tombstone semantics. All validation happens before the first write.
+        script = r"""
+local live,state,hb,sjobs,tjobs,ssum,tsum,retired =
+  KEYS[1],KEYS[2],KEYS[3],KEYS[4],KEYS[5],KEYS[6],KEYS[7],KEYS[8]
+local id,serverType,count=ARGV[1],ARGV[2],tonumber(ARGV[3])
+if not count or count<0 or count~=math.floor(count) or #KEYS~=8+count then return redis.error_reply('invalid admin cleanup arguments') end
+local function typ(k) return redis.call('TYPE',k).ok end
+local function valid(k,t) local v=typ(k); return v=='none' or v==t end
+if not valid(live,'set') or not valid(state,'hash') or not valid(hb,'string') or
+   not valid(sjobs,'set') or not valid(tjobs,'set') or not valid(ssum,'hash') or
+   not valid(tsum,'hash') or not valid(retired,'zset') then return redis.error_reply('wrong key type during admin cleanup') end
+local current=redis.call('HGET',state,id)
+if not current then
+  if typ(sjobs)=='none' and typ(ssum)=='none' and redis.call('SISMEMBER',live,id)==0 then return 2 end
+  return redis.error_reply('server artifacts exist without a lifecycle state')
+end
+if current~='ACTIVE' and current~='DELETING' then return redis.error_reply('server has unexpected lifecycle state: '..current) end
+local refs=redis.call('SMEMBERS',sjobs)
+if #refs~=count then return redis.error_reply('server job index changed; retry deletion') end
+local supplied={}
+for i=1,count do supplied[ARGV[3+i]]=true end
+for _,ref in ipairs(refs) do if not supplied[ref] then return redis.error_reply('job reference missing from cleanup arguments') end end
+local amounts={pending=0,active=0,suspended=0,total=0}
+for i=1,count do
+  local ref=ARGV[3+i]
+  local jk=KEYS[8+i]
+  if typ(jk)~='hash' then return redis.error_reply('missing or wrong-type job hash') end
+  if redis.call('HGET',jk,'serverId')~=id or redis.call('HGET',jk,'serverType')~=serverType then return redis.error_reply('job ownership mismatch') end
+  if redis.call('SISMEMBER',sjobs,ref)~=1 or redis.call('SISMEMBER',tjobs,ref)~=1 then return redis.error_reply('job index membership missing') end
+  local status=redis.call('HGET',jk,'status')
+  if status=='PENDING' then amounts.pending=amounts.pending+1
+  elseif status=='ACTIVE' then amounts.active=amounts.active+1
+  elseif status=='SUSPENDED' then amounts.suspended=amounts.suspended+1
+  else return redis.error_reply('unsupported job status') end
+  amounts.total=amounts.total+1
+end
+local max='9223372036854775807'
+local function enough(field,dec)
+  if dec==0 then return true end
+  local raw=redis.call('HGET',tsum,field) or '0'
+  if not string.match(raw,'^%d+$') then return false end
+  local n=string.gsub(raw,'^0+',''); if n=='' then n='0' end
+  local d=tostring(dec)
+  if #n>#max or (#n==#max and n>max) then return false end
+  if #n<#d or (#n==#d and n<d) then return false end
+  return true
+end
+for field,dec in pairs(amounts) do if not enough(field,dec) then return redis.error_reply('invalid or insufficient type counter: '..field) end end
+-- Commit: fence and clean in this one atomic per-type-slot script.
+local now=redis.call('TIME')
+local nowMs=tonumber(now[1])*1000+math.floor(tonumber(now[2])/1000)
+redis.call('HSET',state,id,'DELETING')
+redis.call('ZADD',retired,'NX',nowMs,id)
+for field,dec in pairs(amounts) do if dec>0 then redis.call('HINCRBY',tsum,field,-dec) end end
+for i=1,count do redis.call('SREM',tjobs,ARGV[3+i]); redis.call('DEL',KEYS[8+i]) end
+redis.call('DEL',sjobs,ssum,hb)
+redis.call('SREM',live,id)
+return 1
+"""
+        refs = sorted(self.client.smembers(server_jobs))
+        job_keys = [f"job:{{{server_type}}}:{ref}" for ref in refs]
+        result = self._eval_checked(
+            self.client, script,
+            [live, state, heartbeat, server_jobs, type_jobs, server_summary,
+             type_summary, retired] + job_keys,
+            [server_id, server_type, str(len(refs))] + refs,
+            "Delete server",
+        )
+        if result not in (1, 2):
+            raise RuntimeError(f"Delete server rejected (code {result}).")
+
+        # Registry is a different Cluster slot: Phase B must be separate.
         self.client.srem(f"servers:{{registry}}:type:{server_type}", server_id)
 
     def _delete_server_type(self, server_type: str) -> None:
-        server_set = f"servers:{{registry}}:type:{server_type}"
-        for server_id in list(self.client.smembers(server_set)):
-            self._delete_server(f"summary:server:{{{server_type}}}:{server_id}")
-        type_jobs = f"jobs:type:{{{server_type}}}"
-        for reference in list(self.client.smembers(type_jobs)):
-            self.client.delete(f"job:{{{server_type}}}:{reference}")
+        """Delete a type only after all discoverable instances are fenced/cleaned."""
+        registry_set = f"servers:{{registry}}:type:{server_type}"
         state_key = f"servers:state:{{{server_type}}}"
+        type_jobs = f"jobs:type:{{{server_type}}}"
+        # Union registry members with lifecycle hash fields. This also catches
+        # state records whose registry membership was lost.
+        server_ids = set(self.client.smembers(registry_set))
+        server_ids.update(self.client.hkeys(state_key))
+        for server_id in sorted(server_ids):
+            self._delete_server(f"summary:server:{{{server_type}}}:{server_id}")
+
+        # Do not erase the aggregate summary if orphan job references remain:
+        # doing so would conceal inconsistent indexes/counters.
+        leftovers = self.client.smembers(type_jobs)
+        if leftovers:
+            raise RuntimeError(
+                f"Type deletion stopped: {len(leftovers)} orphan job reference(s) "
+                "remain in the type index; inspect/reconcile before retrying."
+            )
+
+        # All per-type keys share the {serverType} slot. Registry keys are
+        # intentionally removed separately because they use {registry}.
         self.client.delete(
             type_jobs,
             f"summary:type:{{{server_type}}}",
-            server_set,
             state_key,
+            f"servers:live:{{{server_type}}}",
+            f"servers:retired:{{{server_type}}}",
         )
+        self.client.delete(registry_set)
         self.client.srem("servers:{registry}:types", server_type)
 
     async def action_toggle_expand(self) -> None:
