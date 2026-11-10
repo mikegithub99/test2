@@ -388,11 +388,13 @@ end
 local serverType = ARGV[1]
 local serverId = ARGV[2]
 
--- Check every currently registered type registry atomically. Retired IDs
--- are additionally checked against per-type state tombstones by registerServer()
--- before this registry-slot script runs.
-for i = 3, #KEYS do
-  if redis.call('SISMEMBER', KEYS[i], serverId) == 1 then
+-- Discover and check every type registry inside this atomic script.
+-- All derived registry keys carry the same {registry} hash tag, so this
+-- remains within one Redis Cluster slot and closes the concurrent-new-type race.
+local registeredTypes = redis.call('SMEMBERS', serverTypesKey)
+for _, registeredType in ipairs(registeredTypes) do
+  local registryKey = 'servers:{registry}:type:' .. registeredType
+  if redis.call('SISMEMBER', registryKey, serverId) == 1 then
     return 0
   end
 end
