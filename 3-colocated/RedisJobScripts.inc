@@ -189,8 +189,8 @@ local reference = ARGV[5]
 if storedType ~= serverType or storedServer ~= serverId or not old then
   return RESULT_DATA_INCONSISTENT
 end
-if not redis.call('SISMEMBER', typeJobsKey, reference) or
-   not redis.call('SISMEMBER', serverJobsKey, reference) then
+if redis.call('SISMEMBER', typeJobsKey, reference) ~= 1 or
+   redis.call('SISMEMBER', serverJobsKey, reference) ~= 1 then
   return RESULT_DATA_INCONSISTENT
 end
 if old == newState then
@@ -280,8 +280,8 @@ local reference = ARGV[4]
 if storedType ~= serverType or storedServer ~= serverId or not status then
   return RESULT_DATA_INCONSISTENT
 end
-if not redis.call('SISMEMBER', typeJobsKey, reference) or
-   not redis.call('SISMEMBER', serverJobsKey, reference) then
+if redis.call('SISMEMBER', typeJobsKey, reference) ~= 1 or
+   redis.call('SISMEMBER', serverJobsKey, reference) ~= 1 then
   return RESULT_DATA_INCONSISTENT
 end
 
