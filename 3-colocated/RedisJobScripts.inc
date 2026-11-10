@@ -371,36 +371,65 @@ const char* const KSetServerSummaryMetaScript = kSetServerSummaryMetadataScript;
 
 const char* const kRegisterServerScript = R"lua(
 local serverTypesKey = KEYS[1]
-local typeServersKey = KEYS[2]
 
 local function validtype(key)
   local t = redis.call('TYPE', key).ok
   return t == 'none' or t == 'set'
 end
 
--- All registry keys share {registry}. Validate every key before writing.
+local serverType = ARGV[1]
+local serverId = ARGV[2]
+local registryTypeCount = tonumber(ARGV[3])
+if not registryTypeCount or registryTypeCount < 1 or
+   registryTypeCount ~= math.floor(registryTypeCount) or
+   #KEYS ~= registryTypeCount + 1 or
+   #ARGV ~= registryTypeCount + 3 then
+  return redis.error_reply('invalid registration key arguments')
+end
+
+-- Every registry key the script may inspect is explicitly supplied in KEYS.
+-- ARGV[4..] gives the type corresponding to KEYS[2..].
+local registryKeysByType = {}
+for i = 1, registryTypeCount do
+  local registeredType = ARGV[3 + i]
+  local registryKey = KEYS[1 + i]
+  if not registeredType or registeredType == '' or
+     registryKey ~= 'servers:{registry}:type:' .. registeredType or
+     registryKeysByType[registeredType] then
+    return redis.error_reply('invalid registration registry-key mapping')
+  end
+  registryKeysByType[registeredType] = registryKey
+end
+if not registryKeysByType[serverType] then
+  return redis.error_reply('current server type missing from registration keys')
+end
+
+-- All declared keys share {registry}; validate them before any write.
 for i = 1, #KEYS do
   if not validtype(KEYS[i]) then
     return redis.error_reply('wrong key type')
   end
 end
 
-local serverType = ARGV[1]
-local serverId = ARGV[2]
-
--- Discover and check every type registry inside this atomic script.
--- All derived registry keys carry the same {registry} hash tag, so this
--- remains within one Redis Cluster slot and closes the concurrent-new-type race.
+-- The C++ caller supplies a snapshot of known types. If another registration
+-- added a type after that snapshot, ask C++ to refresh the list and retry.
+-- Redis serializes this script, so the set cannot change between this check
+-- and the duplicate scan/write below.
 local registeredTypes = redis.call('SMEMBERS', serverTypesKey)
 for _, registeredType in ipairs(registeredTypes) do
-  local registryKey = 'servers:{registry}:type:' .. registeredType
-  if redis.call('SISMEMBER', registryKey, serverId) == 1 then
+  if not registryKeysByType[registeredType] then
+    return 2 -- caller must refresh the type list and retry
+  end
+end
+
+for _, registeredType in ipairs(registeredTypes) do
+  if redis.call('SISMEMBER', registryKeysByType[registeredType], serverId) == 1 then
     return 0
   end
 end
 
 redis.call('SADD', serverTypesKey, serverType)
-redis.call('SADD', typeServersKey, serverId)
+redis.call('SADD', registryKeysByType[serverType], serverId)
 return 1
 )lua";
 
@@ -654,7 +683,7 @@ end
 redis.call('DEL', serverJobs)
 redis.call('DEL', serverSummary, heartbeat)
 redis.call('SREM', live, serverId)
--- Keep DELETING as a terminal tombstone; process IDs are never reused.
+-- Retain DELETING until Phase C; IDs may be reused after tombstone collection.
 return 1
 )lua";
 
