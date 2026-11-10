@@ -409,14 +409,14 @@ if current == 'ACTIVE' then
   if not redis.call('HGET', serverSummaryKey, 'meta:registeredAt') then
     local now = redis.call('TIME')
     local nowMs = tonumber(now[1]) * 1000 + math.floor(tonumber(now[2]) / 1000)
-    redis.call('HSETNX', serverSummaryKey, 'meta:registeredAt', nowMs)
+    redis.call('HSETNX', serverSummaryKey, 'meta:registeredAt', tostring(nowMs))
   end
   return 1
 end
 if current ~= false then return 0 end
 local now = redis.call('TIME')
 local nowMs = tonumber(now[1]) * 1000 + math.floor(tonumber(now[2]) / 1000)
-redis.call('HSETNX', serverSummaryKey, 'meta:registeredAt', nowMs)
+redis.call('HSETNX', serverSummaryKey, 'meta:registeredAt', tostring(nowMs))
 redis.call('HSET', stateKey, ARGV[1], 'ACTIVE')
 return 1
 )lua";
@@ -484,7 +484,7 @@ end
 if current == 'DELETING' then
   -- Backfill older tombstones if the retired index did not exist yet.
   if not redis.call('ZSCORE', retired, ARGV[1]) then
-    redis.call('ZADD', retired, redisTimeMs(), ARGV[1])
+    redis.call('ZADD', retired, tostring(redisTimeMs()), ARGV[1])
   end
   if jt == 'none' and mt == 'none' and
      redis.call('SISMEMBER', live, ARGV[1]) == 0 then return 2 end
@@ -506,7 +506,7 @@ if not hasHeartbeated then
   if redisTimeMs() - registeredAt < timeoutMs then return 0 end
 end
 redis.call('HSET', state, ARGV[1], 'DELETING')
-redis.call('ZADD', retired, redisTimeMs(), ARGV[1])
+redis.call('ZADD', retired, tostring(redisTimeMs()), ARGV[1])
 return 1
 )lua";
 
@@ -761,7 +761,7 @@ local nowMs = tonumber(now[1]) * 1000 + math.floor(tonumber(now[2]) / 1000)
 local fields = result[2]
 for i = 1, #fields, 2 do
   if fields[i + 1] == 'DELETING' then
-    redis.call('ZADD', retired, 'NX', nowMs, fields[i])
+    redis.call('ZADD', retired, 'NX', tostring(nowMs), fields[i])
   end
 end
 return result[1]
@@ -780,7 +780,7 @@ if not retentionMs or retentionMs < 0 then
 end
 local now = redis.call('TIME')
 local nowMs = tonumber(now[1]) * 1000 + math.floor(tonumber(now[2]) / 1000)
-return redis.call('ZRANGEBYSCORE', retired, '-inf', nowMs - retentionMs)
+return redis.call('ZRANGEBYSCORE', retired, '-inf', tostring(nowMs - retentionMs))
 )lua";
 
 // Phase C is per-type. The caller confirms registry absence separately because
