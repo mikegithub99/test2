@@ -215,9 +215,15 @@ int64_t parseCounter(const string& value, const string& name)
 {
   try
   {
+    if (value.empty() ||
+        !std::all_of(value.begin(), value.end(),
+                     [](unsigned char ch) { return ch >= '0' && ch <= '9'; }))
+    {
+      throw invalid_argument("invalid counter syntax");
+    }
     std::size_t used = 0;
     const auto parsed = stoll(value, &used);
-    if (used != value.size() || parsed < 0)
+    if (used != value.size())
     {
       throw invalid_argument("invalid counter");
     }
