@@ -84,8 +84,6 @@ string serverRegistryKey(const string& serverType)
 }
 
 const string kServerTypesKey = "servers:{registry}:types";
-// Permanent reservation set: server IDs are globally unique and never reused.
-const string kServerIdsKey = "servers:{registry}:ids";
 
 string heartbeatKey(
     const string& serverType,
@@ -467,33 +465,48 @@ void RedisJobStatus::registerServer(
           "RedisJobStatus: empty or reserved server metadata field");
     }
   }
-  // Discover existing type registries so the script can also detect IDs
-  // registered before the permanent global-ID set was introduced.
+  // Reject IDs that are still represented by an ACTIVE state or a
+  // DELETING tombstone. Phase C removes the tombstone, after which the ID may
+  // be registered again. State hashes are in per-type slots, so inspect them
+  // before the separate atomic registry-slot operation.
   const auto registrationResult = m_client->execute([&](auto& redis)
   {
     vector<string> registeredTypes;
     redis.smembers(kServerTypesKey, back_inserter(registeredTypes));
+    if (std::find(registeredTypes.begin(), registeredTypes.end(), m_serverType) ==
+        registeredTypes.end())
+    {
+      registeredTypes.push_back(m_serverType);
+    }
 
-    KeyList keys = {kServerTypesKey, kServerIdsKey,
-                    serverRegistryKey(m_serverType)};
+    for (const auto& registeredType : registeredTypes)
+    {
+      string existingState;
+      if (redis.hget(serverStateKey(registeredType), m_serverId, existingState))
+      {
+        return int64_t{0};
+      }
+    }
+
+    KeyList keys = {kServerTypesKey, serverRegistryKey(m_serverType)};
     for (const auto& registeredType : registeredTypes)
     {
       const auto key = serverRegistryKey(registeredType);
-      if (std::find(keys.begin() + 2, keys.end(), key) == keys.end())
+      if (std::find(keys.begin() + 1, keys.end(), key) == keys.end())
       {
         keys.push_back(key);
       }
     }
 
-    // Every key uses {registry}; duplicate detection and permanent ID
-    // reservation therefore happen atomically in Redis Cluster as well.
+    // All registry keys use {registry}; concurrent registrations are checked
+    // atomically against every known per-type registry in this Lua script.
     const ArgList args = {m_serverType, m_serverId};
     return evalResult(redis, kRegisterServerScript, keys, args);
   });
   if (registrationResult == 0)
   {
     throw runtime_error(
-        "RedisJobStatus: serverId has already been registered and cannot be reused");
+        "RedisJobStatus: serverId is already registered or still has a retirement tombstone");
   }
   if (registrationResult != 1)
   {
@@ -535,7 +548,8 @@ void RedisJobStatus::registerServer(
 
   // Publish ACTIVE only after registry membership and type metadata are
   // initialized. Activation creates the per-server summary timestamp and ACTIVE
-  // state atomically. A terminal identity is never reactivated; IDs are unique.
+  // state atomically. An ID becomes eligible for reuse only after Phase C removes
+  // its prior per-type state tombstone.
   const KeyList stateKeys = {
       serverStateKey(m_serverType), serverSummaryKey(m_serverType, m_serverId)};
   const ArgList stateArgs = {m_serverId};
