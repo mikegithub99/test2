@@ -371,23 +371,41 @@ const char* const KSetServerSummaryMetaScript = kSetServerSummaryMetadataScript;
 
 const char* const kRegisterServerScript = R"lua(
 local serverTypesKey = KEYS[1]
-local typeServersKey = KEYS[2]
+local allServerIdsKey = KEYS[2]
+local typeServersKey = KEYS[3]
 
 local function validtype(key)
   local t = redis.call('TYPE', key).ok
   return t == 'none' or t == 'set'
 end
 
--- Validate both keys before either write so a wrong-type key cannot leave
--- the two registries out of sync.
-if not validtype(serverTypesKey) or not validtype(typeServersKey) then
-  return redis.error_reply('wrong key type')
+-- All registry keys share {registry}. Validate every key before writing.
+for i = 1, #KEYS do
+  if not validtype(KEYS[i]) then
+    return redis.error_reply('wrong key type')
+  end
 end
 
 local serverType = ARGV[1]
 local serverId = ARGV[2]
+
+-- The permanent ID set enforces global uniqueness for all registrations
+-- made with this script. Also inspect existing per-type registries so IDs
+-- registered before this set was introduced are protected during upgrade.
+if redis.call('SISMEMBER', allServerIdsKey, serverId) == 1 then
+  return 0
+end
+for i = 3, #KEYS do
+  if redis.call('SISMEMBER', KEYS[i], serverId) == 1 then
+    return 0
+  end
+end
+
+-- Reserve the ID permanently before publishing ordinary registry membership.
+redis.call('SADD', allServerIdsKey, serverId)
 redis.call('SADD', serverTypesKey, serverType)
-return redis.call('SADD', typeServersKey, serverId)
+redis.call('SADD', typeServersKey, serverId)
+return 1
 )lua";
 
 
