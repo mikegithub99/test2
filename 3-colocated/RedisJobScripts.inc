@@ -309,12 +309,12 @@ return RESULT_OK
 /**
  * @brief Adds a server type to global discovery and an instance to that type.
  *
- * KEYS[1] is the global server-type set and KEYS[2] is the type-specific
+ * KEYS[1] is the global server-type set and KEYS[2] is the current type's
  * server-ID set. Both keys must use the {registry} Redis Cluster hash tag.
  * ARGV[1] is serverType and ARGV[2] is serverId.
  *
- * Returns the SADD result for the type-specific server set. Returns a Redis
- * error reply before writing if either key exists with a type other than SET.
+ * Returns 0 if the ID is already registered for this type, otherwise 1.
+ * Returns a Redis error reply before writing if either key has the wrong type.
  */
 /**
  * @brief Initializes server-type metadata without overwriting existing values.
@@ -371,6 +371,7 @@ const char* const KSetServerSummaryMetaScript = kSetServerSummaryMetadataScript;
 
 const char* const kRegisterServerScript = R"lua(
 local serverTypesKey = KEYS[1]
+local currentTypeKey = KEYS[2]
 
 local function validtype(key)
   local t = redis.call('TYPE', key).ok
@@ -380,35 +381,22 @@ end
 local serverType = ARGV[1]
 local serverId = ARGV[2]
 
--- The global type set and every dynamically derived registry key share the
--- {registry} hash tag. Redis serializes this script, so the discovered type
--- list and duplicate scan/insertion form one atomic registry-slot operation.
+-- Both registry keys are supplied explicitly and share the {registry} hash
+-- tag. The type-prefixed server ID is unique across types, so only the
+-- current type's registry set needs a duplicate-membership check.
 if not validtype(serverTypesKey) then
   return redis.error_reply('wrong server-types key type')
 end
-local registeredTypes = redis.call('SMEMBERS', serverTypesKey)
-local registryKeysByType = {}
-for _, registeredType in ipairs(registeredTypes) do
-  if registeredType == '' then
-    return redis.error_reply('empty registered server type')
-  end
-  local registryKey = 'servers:{registry}:type:' .. registeredType
-  if not validtype(registryKey) then
-    return redis.error_reply('wrong server registry key type')
-  end
-  registryKeysByType[registeredType] = registryKey
+if currentTypeKey ~= 'servers:{registry}:type:' .. serverType then
+  return redis.error_reply('current server registry key does not match server type')
 end
-
-for _, registeredType in ipairs(registeredTypes) do
-  if redis.call('SISMEMBER', registryKeysByType[registeredType], serverId) == 1 then
-    return 0
-  end
-end
-
-local currentTypeKey = 'servers:{registry}:type:' .. serverType
 if not validtype(currentTypeKey) then
   return redis.error_reply('wrong current server registry key type')
 end
+if redis.call('SISMEMBER', currentTypeKey, serverId) == 1 then
+  return 0
+end
+
 redis.call('SADD', serverTypesKey, serverType)
 redis.call('SADD', currentTypeKey, serverId)
 return 1
