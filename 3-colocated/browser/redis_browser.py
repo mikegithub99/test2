@@ -439,7 +439,7 @@ class RedisBrowser(App):
         job_id = metadata.get("jobId")
         if not server_type or not server_id or job_id is None:
             raise ValueError("Job metadata incomplete; refusing deletion.")
-        reference = f"{len(server_id.encode("utf-8"))}:{server_id}:{job_id}"
+        reference = f"{len(server_id.encode('utf-8'))}:{server_id}:{job_id}"
         expected_key = f"job:{{{server_type}}}:{reference}"
         if job_key != expected_key:
             raise ValueError("Job key does not match its stored identity.")
