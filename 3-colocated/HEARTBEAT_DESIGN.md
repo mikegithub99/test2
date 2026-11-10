@@ -56,11 +56,11 @@ The timestamp is recorded atomically with fencing. Redis hashes have no per-fiel
 
 ## Registration invariant and startup failure limitation
 
-An ID is rejected while it remains in any known per-type registry set or per-type state hash, including its `DELETING` tombstone. Phase C removes that tombstone, after which the ID may be reused. Workers must still generate a fresh ID for every process incarnation, and `registerServer()` must not be replayed late after retirement: once Phase C has completed, Redis cannot distinguish a delayed old process from a new one using the same ID. The first heartbeat remains mandatory for liveness; the registration grace period is only a deadline for an incomplete startup, not a substitute heartbeat.
+Server IDs are type-prefixed and globally unique across types. Registration checks only the current type's registry set and state hash; an ID is rejected while it remains registered or has a `DELETING` tombstone. Phase C removes that tombstone, after which same-type reuse is technically possible. Workers must still generate a fresh ID for every process incarnation, and `registerServer()` must not be replayed late after retirement: once Phase C has completed, Redis cannot distinguish a delayed old process from a new one using the same ID. The first heartbeat remains mandatory for liveness; the registration grace period is only a deadline for an incomplete startup, not a substitute heartbeat.
 
 If registration completes and the worker never sends its first heartbeat, the cleanup scanner fences it after `firstHeartbeatTimeoutSeconds` (60 seconds by default). If the first heartbeat arrives before that deadline, the live-set marker is established and the normal heartbeat TTL governs subsequent liveness. Both the heartbeat refresh and fence check run in the per-type slot, so the race is serialized.
 
-The Phase C registry check and per-type collection cannot be one atomic operation because they use different Cluster slots. Registration checks known per-type state hashes in C++ and then runs the registry-slot Lua script. Lua reads the global type set and dynamically derives each per-type registry key for its duplicate scan; discovery, scan, and insertion are atomic within `{registry}`, so there is no stale-snapshot retry loop. This intentionally accesses derived keys not individually declared in `KEYS`, a Redis Cluster scripting portability consideration that must be verified on the target deployment. The preceding state-hash checks remain cross-slot and are not atomic with registry insertion. Phase A removes the server summary (including `meta:registeredAt`); Phase C later removes the per-server state tombstone, making the ID eligible for reuse.
+The Phase C registry check and per-type collection cannot be one atomic operation because they use different Cluster slots. Registration checks only the current type's state hash in C++ and then runs the registry-slot Lua script with the global type set and current type registry set explicitly supplied in `KEYS`. Server IDs are type-prefixed and globally unique, so neither C++ nor Lua scans other types. The state-hash check remains cross-slot and is not atomic with registry insertion. Phase A removes the server summary (including `meta:registeredAt`); Phase C later removes the per-server state tombstone, making the ID eligible for reuse.
 
 **Upgrade note:** ACTIVE records created before either the legacy state-hash timestamp or the new server-summary `meta:registeredAt` field was added may lack a registration timestamp. The timeout fence deliberately leaves such never-heartbeated records untouched rather than inventing an age. Heartbeated legacy records still expire through the live marker and heartbeat TTL. Audit/reconcile legacy ACTIVE records without a registration timestamp during rollout.
 
@@ -77,7 +77,7 @@ A paused manager can resume after its lease expires, even after another manager 
 - Phase B removes only the exact registry member.
 - Phase C requires the tombstone, elapsed retention, registry absence, and absent per-server artifacts.
 
-These guarantees depend on all lifecycle mutations and destructive cleanup remaining behind the guarded Lua scripts and on server IDs never being reused.
+These guarantees depend on all lifecycle mutations and destructive cleanup remaining behind the guarded Lua scripts and on workers assigning globally unique, type-prefixed IDs to process incarnations; same-type reuse is permitted only after Phase C removes the tombstone.
 
 ## Read consistency
 
