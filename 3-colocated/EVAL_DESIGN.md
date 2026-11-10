@@ -20,9 +20,9 @@ The architecture is well considered. In particular, colocating a server type's j
 
 The normal job lifecycle paths have strong counter-safety properties: they validate affected counters before mutation, update related indexes and counters in a single Lua execution, and remove completed jobs so repeated completion does not decrement counters again.
 
-The main implementation gap found in this review is that the cleanup script's counter preflight is weaker than the shared validation used by the normal lifecycle scripts. Because Redis Lua scripts are atomic with respect to interleaving but do not roll back earlier writes after a later runtime error, this is material to the system's highest-priority invariant.
+The earlier cleanup-counter and stale-index findings in this document have been fixed in the current source. The remaining registration hardening is to ensure every registry key inspected by Lua is explicitly supplied through KEYS; registration now does this and retries if its type snapshot becomes stale. The remaining risks are primarily cross-slot registration recovery and the need for runtime validation.
 
-**Source-level quality assessment: approximately 7.5/10.** The design is strong, but the implementation should not be described as production-validated until the counter-validation gap is fixed and the failure/concurrency cases below are exercised against Redis, including Redis Cluster.
+**Source-level quality assessment: approximately 8.5/10.** The reviewed source has strong same-slot lifecycle and cleanup safeguards, exact counter preflight, stale-index rejection, and explicitly declared registry Lua keys. This is not a production-readiness score: compilation and failure/concurrency tests against Redis and Redis Cluster are still required.
 
 ## 1. Counter correctness
 
@@ -39,41 +39,30 @@ The following design properties are sound:
 
 The shared counter validator used by the normal lifecycle scripts validates digit-only values, the signed 64-bit upper bound, decrement sufficiency, and increment overflow. The C++ counter parser is also strict about malformed, negative, trailing, and out-of-range values.
 
-### 1.2 Finding: cleanup counter preflight is weaker
+### 1.2 Cleanup counter preflight
 
-**Priority: high. Fix before relying on the aggregate-counter integrity guarantee.**
+<badge>Fixed in current source</badge>
 
-In `RedisJobScripts.inc`, `kCleanupExpiredServerScript` has a separate `enough()` validator that parses counter values with Lua `tonumber()` and compares the result to the decrement.
+`kCleanupExpiredServerScript` now validates counters using digit-string normalization and decimal-string comparisons. It rejects non-digit values, values above the signed 64-bit maximum accepted by Redis `HINCRBY`, and values smaller than the decrement required by the jobs being removed. It does not convert stored counters to Lua floating-point numbers.
 
-This is weaker than the shared exact digit-string validator used by create, transition, and completion:
+The script validates all candidate jobs, ownership, statuses, index membership, and aggregate counter sufficiency before its first write. This matters because Redis Lua scripts prevent interleaving but do not roll back earlier writes after a later runtime error.
 
-1. Lua numeric conversion uses floating-point representation and cannot exactly represent every signed 64-bit integer.
-2. The cleanup validator does not enforce the maximum signed 64-bit value accepted by Redis `HINCRBY`.
+The normal lifecycle scripts use the shared exact counter validator and preflight increments/decrements before mutation. Both paths now use integer-safe validation appropriate to their operations.
 
-Redis Lua scripts prevent other commands from interleaving during execution, but they do **not** roll back writes already performed if a later Redis command raises a runtime error. Consequently, a malformed or out-of-range counter can pass a floating-point comparison and then cause a later `HINCRBY` to fail after an earlier counter has already been changed. That can leave aggregate counters partially updated.
+### 1.3 Stale job-index membership
 
-**Recommendation:** use the same exact digit-string and signed 64-bit validation for cleanup as for the normal lifecycle scripts. For cleanup's potentially larger decrement, compare digit strings or otherwise use an exact integer-safe method; do not convert the stored counter to a Lua floating-point number. Complete all validation before the first write.
+<badge>Fixed in current source</badge>
 
-### 1.3 Finding: create does not reject stale index membership
-
-**Priority: medium.**
-
-`kCreatePendingScript` checks that the job hash does not already exist and validates the index key types, but it does not check whether the job reference is already present in either index.
-
-If a job hash is absent but a stale reference remains in one or both indexes, creation can proceed. A subsequent `SADD` may be a no-op while the script increments counters as if it had created a new indexed job.
-
-This is primarily a defensive consistency gap; the normal lifecycle scripts are intended to maintain these structures together.
-
-**Recommendation:** before the first write, check that the reference is absent from both the type and server job indexes. If either already contains the reference while the job hash is absent, return `InconsistentData`.
+`kCreatePendingScript` now checks both the type-job and server-job indexes before its first write. If the job hash is absent but either index already contains the composite reference, creation returns `InconsistentData` rather than allowing `SADD` to be a no-op while counters are incremented.
 
 ### 1.4 Counter-path summary
 
 | Operation | Assessment |
 |---|---|
-| Create pending job | Good preflight and atomic updates; add stale-index absence checks |
+| Create pending job | Exact counter preflight, stale-index rejection, and atomic updates |
 | Transition | Good preflight and atomic status/counter/index updates |
 | Complete | Good preflight and atomic counter/index/job deletion |
-| Server cleanup | Good structural validation and aggregation from actual jobs; counter numeric validation needs strengthening |
+| Server cleanup | Structural and exact counter validation before mutation; decrements derived from validated jobs |
 | Repeated completion | Correct; no second decrement |
 | Concurrent completion and cleanup | Serialized in the same per-type slot |
 | Counter reads | Strict parsing; malformed values fail rather than silently becoming zero |
@@ -95,7 +84,7 @@ This ordering is sensible: a server does not become active before registry membe
 
 Registration is not atomic across the global registry slot and the per-type slot. A crash between those operations can leave a stale global registry member without an active per-type state entry. The scanner skips missing state, so stale registry membership requires reconciliation.
 
-The once-only `registerServer()` call, globally unique server IDs, and never-reused IDs are important assumptions in the safety argument. They are host-application invariants, not globally enforced uniqueness constraints in Redis.
+The registration policy rejects an ID while it remains in any known per-type registry set or per-type state hash, including a DELETING tombstone. Phase C removes the tombstone, after which the ID may be reused. Workers must nevertheless generate a fresh ID for every process incarnation and must not replay registration late after retirement; Redis cannot distinguish a delayed old process from a new one once Phase C has completed.
 
 ### 2.2 Heartbeat and fencing
 
@@ -122,7 +111,7 @@ The registry removal and tombstone collection are correctly separated because th
 
 The retired-server sorted set provides a durable cleanup index independent of the global registry. The HSCAN migration/backfill logic is sensible: existing retirement scores are preserved with `ZADD NX`, and a missing state hash is treated as an empty migration source.
 
-The Phase C registry-absence check and per-type tombstone deletion cannot be atomic together. This is an accepted architectural boundary, relying on globally unique, never-reused server IDs and the rule that a retired registration is not resumed or replayed late.
+The Phase C registry-absence check and per-type tombstone deletion cannot be atomic together. Registration checks per-type state hashes in C++ and then performs its registry-slot operation. IDs are reusable after Phase C removes the tombstone, so each process incarnation must use a fresh ID and must not replay registration after retirement.
 
 ### 2.5 Cleanup lease
 
@@ -157,9 +146,11 @@ No normal-path C++ lifecycle ordering defect was identified in this source revie
 
 The key layout consistently separates global registry/lease keys under `{registry}` from per-server-type lifecycle, heartbeat, job, summary, and cleanup keys under `{serverType}`.
 
-The multi-key Lua operations reviewed use keys from one slot. Registration and Phase B/C appropriately split work across slots rather than attempting cross-slot Lua transactions.
+The multi-key Lua operations reviewed use keys from one slot. Registration's registry Lua script now receives the global type set and every per-type registry set it may inspect as explicit `KEYS` arguments; it does not construct and access undeclared registry keys. The C++ caller supplies a snapshot of known types, and the script returns a retry result if the type set changed before execution. Since the script runs atomically, it can then check all supplied registry sets and insert the ID without a concurrent type-addition race.
 
-This is a key strength: a script that works on standalone Redis can still fail with `CROSSSLOT` in Redis Cluster. The implementation accounts for that constraint.
+Registration still checks per-type state hashes in C++ before the registry-slot script because those hashes occupy different Cluster slots. That state check plus registry insertion is not one cross-slot atomic operation. All keys within the registration Lua invocation share the literal `{registry}` hash tag; this is not a hash-slot mismatch.
+
+This is a key strength: a script that works on standalone Redis can still fail with `CROSSSLOT` in Redis Cluster. The implementation keeps each multi-key script within one slot.
 
 This conclusion is source-level only. Actual Cluster integration tests are still required.
 
@@ -208,15 +199,15 @@ Recommended clarifications:
 | Three-phase cleanup | Accurate | Keep |
 | Cleanup lease guarantees | Accurate with stated limits | Keep |
 | Dashboard snapshots | Accurate | Keep |
-| Counter preflight | Overstates uniformity of validation | Fix cleanup validator and describe the guarantee precisely |
+| Counter preflight | Exact digit-string validation in normal lifecycle and cleanup | Current source validates before mutation |
 | Utilities | Incomplete | State that both C++ utilities currently use standalone Redis |
 | Browser | Needs context | Identify Python browser as a mock, not the production UI |
 
-The most important documentation qualification is the cleanup counter preflight. Cleanup does validate before writing, but its numeric validation is not currently equivalent to the exact signed-64-bit validation used in the normal lifecycle scripts.
+The registration-key declaration contract should be documented precisely: every key inspected by registration Lua is passed in KEYS, with a retry if the supplied type snapshot is stale. Registration's C++ state-hash checks remain cross-slot and therefore are not atomic with the registry operation.
 
 ### 6.2 `HEARTBEAT_DESIGN.md`
 
-This document is consistent with the current architecture and is a useful technical design reference. It should receive the same cleanup-counter qualification until the validator is fixed.
+This document is consistent with the current architecture and is a useful technical design reference. The cleanup implementation now uses exact digit-string counter preflight; keep this design document aligned if counter-validation details are expanded there.
 
 ### 6.3 `NEWIDEA.md`
 
@@ -251,17 +242,15 @@ Recommendation: mark it clearly as a historical proposal or update it to point t
 
 Prioritized by impact on the system's stated goals:
 
-1. **Fix cleanup counter preflight** to use exact signed-64-bit validation rather than Lua floating-point comparisons.
-2. Add stale-index absence checks to `kCreatePendingScript`.
-3. Add defensive validation for unexpected Lua result integers in C++.
-4. Update `NEWIDEA.md` and clarify the standalone-only utility limitation in the README.
-5. Add automated tests for counter underflow, overflow, malformed values, partial/corrupted indexes, and cleanup racing with create, transition, and completion.
-6. Run those tests against standalone Redis and Redis Cluster, including failure injection around all three cleanup phases.
+1. Add defensive validation for unexpected Lua result integers in C++.
+2. Update `NEWIDEA.md` and clarify the standalone-only utility limitation in the README.
+3. Add automated tests for counter underflow, overflow, malformed values, partial/corrupted indexes, stale registration snapshots, and cleanup racing with create, transition, and completion.
+4. Run those tests against standalone Redis and Redis Cluster, including failure injection around all three cleanup phases and concurrent registration of the same ID under newly introduced types.
 
-The first two items should be addressed before broader polish. The architecture does not need redesign, and the current completion result model should be retained. The main task is to make the defensive guarantees in cleanup and corrupted-data scenarios as strong as those already present in the normal job lifecycle.
+The earlier cleanup-counter and stale-create-index findings are fixed in the current source. The remaining priority is runtime validation and recovery testing, not a redesign of the architecture.
 
 ## Conclusion
 
 The implementation has a strong architectural foundation. Same-slot Lua serialization, explicit lifecycle states, idempotent cleanup phases, strict normal-path counter validation, and clear Redis Cluster boundaries are all appropriate choices for this system.
 
-The most important remaining risk is exceptional-path counter integrity. Fixing cleanup's weaker numeric preflight and rejecting stale index membership during creation would materially improve confidence. After that, the priority should be automated failure/concurrency testing on real Redis and Redis Cluster rather than architectural changes.
+The reviewed source now has exact cleanup counter preflight, stale-index rejection during creation, and explicit registry Lua key declarations with stale-snapshot retry. The principal remaining confidence gap is the absence of compile, standalone Redis, and Redis Cluster tests, especially around concurrent registration and cross-slot recovery.
