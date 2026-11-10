@@ -472,8 +472,10 @@ void RedisJobStatus::registerServer(
   // check precedes the atomic registry-slot operation.
   const auto registrationResult = m_client->execute([&](auto& redis)
   {
-    string existingState;
-    if (redis.hget(serverStateKey(m_serverType), m_serverId, existingState))
+    const auto existingState =
+        redis.hget(serverStateKey(m_serverType), m_serverId);
+
+    if (existingState)
     {
       return int64_t{0};
     }
