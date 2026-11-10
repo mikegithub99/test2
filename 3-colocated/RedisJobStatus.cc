@@ -471,30 +471,48 @@ void RedisJobStatus::registerServer(
   // before the separate atomic registry-slot operation.
   const auto registrationResult = m_client->execute([&](auto& redis)
   {
-    vector<string> registeredTypes;
-    redis.smembers(kServerTypesKey, back_inserter(registeredTypes));
-    if (std::find(registeredTypes.begin(), registeredTypes.end(), m_serverType) ==
-        registeredTypes.end())
+    // State hashes occupy separate per-type slots, so check them in C++ before
+    // the registry-slot operation. Retry if a concurrent registration adds a
+    // type after this snapshot; the Lua script detects that race atomically.
+    for (int attempt = 0; attempt < 8; ++attempt)
     {
-      registeredTypes.push_back(m_serverType);
-    }
-
-    for (const auto& registeredType : registeredTypes)
-    {
-      string existingState;
-      if (redis.hget(serverStateKey(registeredType), m_serverId, existingState))
+      vector<string> registeredTypes;
+      redis.smembers(kServerTypesKey, back_inserter(registeredTypes));
+      if (std::find(registeredTypes.begin(), registeredTypes.end(), m_serverType) ==
+          registeredTypes.end())
       {
-        return int64_t{0};
+        registeredTypes.push_back(m_serverType);
+      }
+      std::sort(registeredTypes.begin(), registeredTypes.end());
+      registeredTypes.erase(
+          std::unique(registeredTypes.begin(), registeredTypes.end()),
+          registeredTypes.end());
+
+      for (const auto& registeredType : registeredTypes)
+      {
+        string existingState;
+        if (redis.hget(serverStateKey(registeredType), m_serverId, existingState))
+        {
+          return int64_t{0};
+        }
+      }
+
+      KeyList keys = {kServerTypesKey};
+      ArgList args = {m_serverType, m_serverId,
+                      std::to_string(registeredTypes.size())};
+      for (const auto& registeredType : registeredTypes)
+      {
+        keys.push_back(serverRegistryKey(registeredType));
+        args.push_back(registeredType);
+      }
+
+      const auto result = evalResult(redis, kRegisterServerScript, keys, args);
+      if (result != 2) // 2 means the registry type snapshot became stale
+      {
+        return result;
       }
     }
-
-    KeyList keys = {kServerTypesKey, serverRegistryKey(m_serverType)};
-
-    // The Lua script discovers all known per-type registries atomically from
-    // servers:{registry}:types, avoiding a stale C++ snapshot during concurrent
-    // registrations of the same ID under different newly-created types.
-    const ArgList args = {m_serverType, m_serverId};
-    return evalResult(redis, kRegisterServerScript, keys, args);
+    return int64_t{-1}; // too many concurrent type additions; caller can retry
   });
   if (registrationResult == 0)
   {
