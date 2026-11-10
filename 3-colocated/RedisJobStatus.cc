@@ -465,38 +465,21 @@ void RedisJobStatus::registerServer(
           "RedisJobStatus: empty or reserved server metadata field");
     }
   }
-  // Reject IDs that are still represented by an ACTIVE state or a
-  // DELETING tombstone. Phase C removes the tombstone, after which the ID may
-  // be registered again. State hashes are in per-type slots, so inspect them
-  // before the separate atomic registry-slot operation.
+  // Server IDs are type-prefixed and therefore cannot collide across types.
+  // Check only this type's state hash for an ACTIVE record or DELETING
+  // tombstone; Phase C removes the tombstone and permits same-type reuse.
+  // State and registry keys occupy different Cluster slots, so this state
+  // check precedes the atomic registry-slot operation.
   const auto registrationResult = m_client->execute([&](auto& redis)
   {
-    // State hashes occupy separate per-type slots, so check known types in
-    // C++ before the registry-slot operation. Lua independently discovers
-    // the current registry types and checks every corresponding registry set
-    // atomically, so concurrent additions cannot cause a bounded retry failure.
-    vector<string> registeredTypes;
-    redis.smembers(kServerTypesKey, back_inserter(registeredTypes));
-    if (std::find(registeredTypes.begin(), registeredTypes.end(), m_serverType) ==
-        registeredTypes.end())
+    string existingState;
+    if (redis.hget(serverStateKey(m_serverType), m_serverId, existingState))
     {
-      registeredTypes.push_back(m_serverType);
-    }
-    std::sort(registeredTypes.begin(), registeredTypes.end());
-    registeredTypes.erase(
-        std::unique(registeredTypes.begin(), registeredTypes.end()),
-        registeredTypes.end());
-
-    for (const auto& registeredType : registeredTypes)
-    {
-      string existingState;
-      if (redis.hget(serverStateKey(registeredType), m_serverId, existingState))
-      {
-        return int64_t{0};
-      }
+      return int64_t{0};
     }
 
-    const KeyList keys = {kServerTypesKey};
+    const KeyList keys = {
+        kServerTypesKey, serverRegistryKey(m_serverType)};
     const ArgList args = {m_serverType, m_serverId};
     return evalResult(redis, kRegisterServerScript, keys, args);
   });
