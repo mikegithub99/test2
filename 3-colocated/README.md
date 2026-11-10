@@ -155,7 +155,7 @@ Job lifecycle keys use `{serverType}`; job hashes, type/server indexes, summarie
 
 Registration first updates `servers:{registry}:types` and `servers:{registry}:type:<serverType>` in one script; both use the literal `{registry}` tag. It then initializes type-summary metadata and server-summary metadata in separate operations, and finally activates the server in a per-type-slot Lua script that generates `meta:registeredAt` and writes `ACTIVE` atomically. Registry keys intentionally occupy a different slot from per-type data, so the complete registration workflow is not one atomic cross-slot operation.
 
-Pass every accessed key explicitly through Lua `KEYS` and preserve the same-slot requirement. Redis Lua scripts execute without interleaving, but they are not rollback transactions: validate key types and state before writing.
+Pass every accessed key explicitly through Lua `KEYS` and preserve the same-slot requirement. The registration script is a narrow exception: it reads the global type set and derives per-type registry key names inside Lua; every derived key uses the literal `{registry}` hash tag, so all accesses remain in the same Cluster slot. Redis Lua scripts execute without interleaving, but they are not rollback transactions: validate key types and state before writing.
 
 ## Lua argument conventions
 
