@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import os
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Any
 
 import redis
@@ -40,7 +40,7 @@ def format_metadata(metadata: dict[str, str]) -> dict[str, str]:
         try:
             milliseconds = int(value)
             formatted["registeredAt"] = (
-                datetime.fromtimestamp(milliseconds / 1000, tz=__import__("datetime").timezone.utc)
+                datetime.fromtimestamp(milliseconds / 1000, tz=timezone.utc)
                 .isoformat(timespec="milliseconds")
                 .replace("+00:00", "Z")
             )
@@ -439,7 +439,7 @@ class RedisBrowser(App):
         job_id = metadata.get("jobId")
         if not server_type or not server_id or job_id is None:
             raise ValueError("Job metadata incomplete; refusing deletion.")
-        reference = f"{len(server_id)}:{server_id}:{job_id}"
+        reference = f"{len(server_id.encode("utf-8"))}:{server_id}:{job_id}"
         expected_key = f"job:{{{server_type}}}:{reference}"
         if job_key != expected_key:
             raise ValueError("Job key does not match its stored identity.")
@@ -599,7 +599,23 @@ return 1
         # Union registry members with lifecycle hash fields. This also catches
         # state records whose registry membership was lost.
         server_ids = set(self.client.smembers(registry_set))
-        server_ids.update(self.client.hkeys(state_key))
+        server_ids.update(
+            server_id for server_id in self.client.hkeys(state_key)
+            if not server_id.startswith("registeredAt:")
+        )
+        # Include orphaned per-server keys even if registry membership and
+        # lifecycle state were lost. RedisCluster.scan_iter visits primaries.
+        for pattern in (
+            f"summary:server:{{{server_type}}}:*",
+            f"jobs:server:{{{server_type}}}:*",
+        ):
+            prefix = (
+                f"summary:server:{{{server_type}}}:"
+                if pattern.startswith("summary:") else
+                f"jobs:server:{{{server_type}}}:"
+            )
+            for key in self.client.scan_iter(match=pattern, count=500):
+                server_ids.add(key[len(prefix):])
         for server_id in sorted(server_ids):
             self._delete_server(f"summary:server:{{{server_type}}}:{server_id}")
 
