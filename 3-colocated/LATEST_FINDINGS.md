@@ -2,7 +2,7 @@
 
 **Audit date:** 2026-11-10  
 **Audited branch:** `main`  
-**Audited commit:** `ac1667cca5b58db4ac09027ad42b36cb3fd90442`  
+**Audited commit:** updated by the SISMEMBER fix commit  
 **Scope:** All files under `3-colocated`, including the C++ Redis client/status/heartbeat implementation, embedded Lua scripts, browser/admin utility, command-line utilities, and design documentation.
 
 This is an independent source review. It is not a build, runtime, Redis, or Redis Cluster test. Findings below distinguish concrete defects from assumptions and known operational limitations.
@@ -14,7 +14,7 @@ The overall design has a clear separation between the global `{registry}` slot a
 | Priority | Finding |
 |---|---|
 | High | Whole-type browser deletion races with concurrent worker registration |
-| Medium | Lua membership validation uses incorrect truthiness checks |
+| Fixed | Lua membership validation used incorrect truthiness checks (F-02; fixed in this update) |
 | Medium | Type-prefixed server-ID uniqueness is assumed but not enforced at the C++ boundary |
 | Medium | Registration can leave an undiscoverable, permanently stale registry entry after a partial failure |
 | Medium | Redis reset utility omits per-type live-server sets |
@@ -45,35 +45,26 @@ The per-server DELETING tombstone protects deletion of one known server ID. It d
 
 Introduce a type-level lifecycle state (for example, ACTIVE/DELETING) in a key whose slot and atomicity model are explicitly designed for registration and type deletion. Registration must reject a type marked DELETING, and type deletion must atomically close registration before enumerating and removing instances. If that cannot be made atomic across the registry and type slots, use a two-phase type-retirement protocol with a durable registry-level fence and a documented recovery path. Do not rely only on a one-time enumeration.
 
-### F-02 — Medium: Lua membership checks use incorrect truthiness semantics
+### F-02 — Fixed: Lua membership checks used incorrect truthiness semantics
 
 **Locations**
 
-- `RedisJobScripts.inc:192-194` — `kTransitionScript`
-- `RedisJobScripts.inc:283-285` — `kCompleteScript`
+- `RedisJobScripts.inc` — `kTransitionScript`
+- `RedisJobScripts.inc` — `kCompleteScript`
 
-**Problem**
+**Problem (now fixed)**
 
-Both scripts use this form:
+These scripts previously tested the numeric result of Redis `SISMEMBER` using Lua's `not` operator. Redis returns integer `0` or `1`, and Lua treats numeric zero as truthy. As a result, a missing membership was not rejected by the intended integrity check.
 
-```lua
-if not redis.call('SISMEMBER', indexKey, reference) then
-```
+**Fix applied**
 
-Redis returns integer `0` or `1` for `SISMEMBER`. In Lua, numeric zero is truthy; only `false` and `nil` are false. Consequently, `not 0` evaluates to `false`, and the missing-membership branch is not taken. These scripts therefore fail to reject a job whose type or server index membership is missing.
+Both membership checks in each script now compare the Redis result explicitly with `~= 1`. This correctly rejects a missing type-index or server-index membership.
 
-This weakens the integrity preflight promised by the code and documentation. The other `SISMEMBER` checks in the audited Lua source that compare explicitly with `~= 1` or `== 0` use the correct form.
+The remaining `SISMEMBER` checks in this file were reviewed and already use explicit numeric comparisons.
 
-**Recommendation**
+**Regression coverage still recommended**
 
-Change both conditions to explicit integer comparisons, e.g.:
-
-```lua
-if redis.call('SISMEMBER', typeJobsKey, reference) ~= 1 or
-   redis.call('SISMEMBER', serverJobsKey, reference) ~= 1 then
-```
-
-Add regression cases for each missing-index combination in both transition and completion operations.
+Add regression cases for each missing-index combination in both transition and completion operations. No runtime test was performed as part of this change.
 
 ### F-03 — Medium: Type-prefixed server-ID uniqueness is not validated by the implementation
 
