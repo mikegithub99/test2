@@ -23,7 +23,8 @@ const std::vector<std::string>& redisJobStatusPatterns()
         "jobs:server:{*}:*",
         "heartbeat:server:{*}:*",
         "servers:state:{*}",
-        "servers:retired:{*}"
+        "servers:retired:{*}",
+        "servers:{registry}:cleanup-lease"
     };
 
     return patterns;
