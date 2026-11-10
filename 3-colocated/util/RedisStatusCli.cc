@@ -1,6 +1,6 @@
 /**
  * @file RedisStatusCli.cc
- * @brief Standalone Redis keyspace inspector for SET and HASH values.
+ * @brief Standalone Redis keyspace inspector for current Redis Job Status state.
  *
  * Configuration:
  *   REDIS_URL=redis://127.0.0.1:6379
@@ -79,9 +79,20 @@ void printKey(Redis& redis, const string& key)
     cout << "  value: " << (value ? *value : string("<missing>")) << '\n';
     cout << "  TTL: " << redis.ttl(key) << " seconds\n";
   }
+  else if (type == "zset")
+  {
+    vector<pair<string, double>> members;
+    redis.zrange(key, 0, -1, std::back_inserter(members));
+    cout << "  members (" << members.size()
+         << "), member -> score (Redis timestamp in Unix milliseconds):\n";
+    for (const auto& member : members)
+    {
+      cout << "    " << member.first << " -> " << member.second << '\n';
+    }
+  }
   else
   {
-    cout << "  (value display is currently implemented for SET, HASH, and STRING)\n";
+    cout << "  (value display is currently implemented for SET, HASH, STRING, and ZSET)\n";
   }
 }
 } // namespace
@@ -106,7 +117,7 @@ int main()
     do
     {
       vector<string> keys;
-      redis.scan(cursor, pattern, count, std::back_inserter(keys));
+      cursor = redis.scan(cursor, pattern, count, std::back_inserter(keys));
 
       for (const auto& key : keys)
       {
