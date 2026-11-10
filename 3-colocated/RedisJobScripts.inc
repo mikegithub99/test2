@@ -1,3 +1,21 @@
+// Shared counter preflight functions prepended to each counter-mutating script.
+const char* const kCounterValidationPrelude = R"lua(
+local function counterValid(key, field, delta, requirePositive)
+  local raw = redis.call('HGET', key, field) or '0'
+  if not string.match(raw, '^%d+$') then return false end
+  local digits = string.gsub(raw, '^0+', '')
+  if digits == '' then digits = '0' end
+  local maxValue = '9223372036854775807'
+  if #digits > #maxValue or
+     (#digits == #maxValue and digits > maxValue) then
+    return false
+  end
+  if requirePositive and digits == '0' then return false end
+  if delta == 1 and digits == maxValue then return false end
+  return true
+end
+)lua";
+
 /**
  * @file RedisJobScripts.inc
  * @brief Embedded Lua scripts for RedisJobStatus.
@@ -71,6 +89,14 @@ if not validtype(typeJobsKey, 'set') or
 end
 if redis.call('HGET', serverStateKey, ARGV[3]) ~= 'ACTIVE' then
   return 7 -- RESULT_SERVER_NOT_ACTIVE
+end
+-- Preflight every counter before the first mutation. HINCRBY then cannot fail
+-- because of malformed, negative, or overflowing counter values.
+if not counterValid(typeSummaryKey, 'pending', 1, false) or
+   not counterValid(typeSummaryKey, 'total', 1, false) or
+   not counterValid(serverSummaryKey, 'pending', 1, false) or
+   not counterValid(serverSummaryKey, 'total', 1, false) then
+  return RESULT_DATA_INCONSISTENT
 end
 
 local jobId = ARGV[1]
@@ -175,12 +201,12 @@ if not allowed then
   return RESULT_INVALID_TRANSITION
 end
 
-local function hasCounters(key)
-  local oldValue = tonumber(redis.call('HGET', key, oldCounter) or '0')
-  local total = tonumber(redis.call('HGET', key, 'total') or '0')
-  return oldValue and total and oldValue >= 1 and total >= 1
-end
-if not hasCounters(typeSummaryKey) or not hasCounters(serverSummaryKey) then
+if not counterValid(typeSummaryKey, oldCounter, -1, true) or
+   not counterValid(typeSummaryKey, newCounter, 1, false) or
+   not counterValid(typeSummaryKey, 'total', 0, true) or
+   not counterValid(serverSummaryKey, oldCounter, -1, true) or
+   not counterValid(serverSummaryKey, newCounter, 1, false) or
+   not counterValid(serverSummaryKey, 'total', 0, true) then
   return RESULT_DATA_INCONSISTENT
 end
 
@@ -257,12 +283,10 @@ local counter = string.lower(status)
 if status ~= 'PENDING' and status ~= 'ACTIVE' and status ~= 'SUSPENDED' then
   return RESULT_DATA_INCONSISTENT
 end
-local function hasCounters(key)
-  local count = tonumber(redis.call('HGET', key, counter) or '0')
-  local total = tonumber(redis.call('HGET', key, 'total') or '0')
-  return count and total and count >= 1 and total >= 1
-end
-if not hasCounters(typeSummaryKey) or not hasCounters(serverSummaryKey) then
+if not counterValid(typeSummaryKey, counter, -1, true) or
+   not counterValid(typeSummaryKey, 'total', -1, true) or
+   not counterValid(serverSummaryKey, counter, -1, true) or
+   not counterValid(serverSummaryKey, 'total', -1, true) then
   return RESULT_DATA_INCONSISTENT
 end
 
