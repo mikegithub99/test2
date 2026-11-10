@@ -11,6 +11,7 @@
 
 #include <algorithm>
 #include <cctype>
+#include <limits>
 #include <ctime>
 #include <iomanip>
 #include <iterator>
@@ -190,6 +191,17 @@ int64_t evalResult(
       script, keys.begin(), keys.end(), args.begin(), args.end());
 }
 
+template <typename Redis>
+int64_t evalCounterResult(
+    Redis& redis,
+    const char* script,
+    const KeyList& keys,
+    const ArgList& args)
+{
+  const string validatedScript = string(kCounterValidationPrelude) + script;
+  return evalResult(redis, validatedScript, keys, args);
+}
+
 
 template <typename Redis>
 vector<string> evalStrings(Redis& redis, const string& script,
@@ -197,6 +209,25 @@ vector<string> evalStrings(Redis& redis, const string& script,
 {
   return redis.template eval<vector<string>>(
       script, keys.begin(), keys.end(), args.begin(), args.end());
+}
+
+int64_t parseCounter(const string& value, const string& name)
+{
+  try
+  {
+    std::size_t used = 0;
+    const auto parsed = stoll(value, &used);
+    if (used != value.size() || parsed < 0)
+    {
+      throw invalid_argument("invalid counter");
+    }
+    return parsed;
+  }
+  catch (const exception&)
+  {
+    throw runtime_error("RedisJobStatus: invalid non-negative integer counter '" +
+                        name + "'");
+  }
 }
 
 map<string, int64_t> countersFromSnapshot(
@@ -215,17 +246,7 @@ map<string, int64_t> countersFromSnapshot(
     {
       continue;
     }
-    try {
-      std::size_t used = 0;
-      const auto parsed = stoll(value, &used);
-      if (used != value.size())
-      {
-        throw invalid_argument("trailing data");
-      }
-      counters[name] = parsed;
-    } catch (const exception&) {
-      throw runtime_error("RedisJobStatus: non-integer counter '" + name + "'");
-    }
+    counters[name] = parseCounter(value, name);
   }
   return counters;
 }
@@ -247,15 +268,7 @@ map<string, int64_t> readCounters(
     {
       continue;
     }
-    try
-    {
-      counters[field.first] = stoll(field.second);
-    }
-    catch (const exception&)
-    {
-      throw runtime_error(
-          "RedisJobStatus: non-integer counter '" + field.first + "'");
-    }
+    counters[field.first] = parseCounter(field.second, field.first);
   }
   return counters;
 }
@@ -375,7 +388,7 @@ RedisJobStatus::Result RedisJobStatus::createPendingJob(
   });
   const auto result = m_client->execute([&](auto& redis)
   {
-    return evalResult(redis, kCreatePendingScript, keys, args);
+    return evalCounterResult(redis, kCreatePendingScript, keys, args);
   });
   return static_cast<Result>(result);
 }
@@ -399,7 +412,7 @@ RedisJobStatus::Result RedisJobStatus::transitionJob(
   ArgList args = {jobId, m_serverType, m_serverId, newStateName, reference};
   const auto result = m_client->execute([&](auto& redis)
   {
-    return evalResult(redis, kTransitionScript, keys, args);
+    return evalCounterResult(redis, kTransitionScript, keys, args);
   });
   return static_cast<Result>(result);
 }
@@ -416,7 +429,7 @@ RedisJobStatus::Result RedisJobStatus::completeJob(const string& jobId)
   ArgList args = {jobId, m_serverType, m_serverId, reference};
   const auto result = m_client->execute([&](auto& redis)
   {
-    return evalResult(redis, kCompleteScript, keys, args);
+    return evalCounterResult(redis, kCompleteScript, keys, args);
   });
   return static_cast<Result>(result);
 }
