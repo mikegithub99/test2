@@ -20,7 +20,7 @@ The architecture is well considered. In particular, colocating a server type's j
 
 The normal job lifecycle paths have strong counter-safety properties: they validate affected counters before mutation, update related indexes and counters in a single Lua execution, and remove completed jobs so repeated completion does not decrement counters again.
 
-The earlier cleanup-counter and stale-index findings in this document have been fixed in the current source. The remaining registration hardening is to ensure every registry key inspected by Lua is explicitly supplied through KEYS; registration now does this and retries if its type snapshot becomes stale. The remaining risks are primarily cross-slot registration recovery and the need for runtime validation.
+The earlier cleanup-counter and stale-index findings in this document have been fixed in the current source. Registration Lua discovers the registered types and derives their per-type registry keys dynamically. Those keys all share the `{registry}` hash tag, so the duplicate scan and registry insertion execute atomically in one slot. This avoids a stale-snapshot retry path; the trade-off is that the script accesses derived keys rather than declaring every accessed key in `KEYS`, which is less aligned with Redis Cluster scripting guidance and must be validated against the target Redis deployment.
 
 **Source-level quality assessment: approximately 8.5/10.** The reviewed source has strong same-slot lifecycle and cleanup safeguards, exact counter preflight, stale-index rejection, and explicitly declared registry Lua keys. This is not a production-readiness score: compilation and failure/concurrency tests against Redis and Redis Cluster are still required.
 
@@ -146,7 +146,7 @@ No normal-path C++ lifecycle ordering defect was identified in this source revie
 
 The key layout consistently separates global registry/lease keys under `{registry}` from per-server-type lifecycle, heartbeat, job, summary, and cleanup keys under `{serverType}`.
 
-The multi-key Lua operations reviewed use keys from one slot. Registration's registry Lua script now receives the global type set and every per-type registry set it may inspect as explicit `KEYS` arguments; it does not construct and access undeclared registry keys. The C++ caller supplies a snapshot of known types, and the script returns a retry result if the type set changed before execution. Since the script runs atomically, it can then check all supplied registry sets and insert the ID without a concurrent type-addition race.
+The multi-key Lua operations reviewed use keys from one slot. Registration's registry Lua script receives the global type set as `KEYS[1]`, reads its members, and derives `servers:{registry}:type:<type>` keys for the duplicate scan. The current type list, duplicate scan, and insertion execute in one script, so another registration cannot add a type between discovery and the scan. This intentionally uses dynamically derived keys that are not individually declared in `KEYS`; all of them nevertheless share the literal `{registry}` hash tag. This is less aligned with Redis Cluster scripting guidance than explicitly passing every key, so verify the behavior on the exact Redis/Cluster version and deployment configuration.
 
 Registration still checks per-type state hashes in C++ before the registry-slot script because those hashes occupy different Cluster slots. That state check plus registry insertion is not one cross-slot atomic operation. All keys within the registration Lua invocation share the literal `{registry}` hash tag; this is not a hash-slot mismatch.
 
@@ -203,7 +203,7 @@ Recommended clarifications:
 | Utilities | Incomplete | State that both C++ utilities currently use standalone Redis |
 | Browser | Needs context | Identify Python browser as a mock, not the production UI |
 
-The registration-key declaration contract should be documented precisely: every key inspected by registration Lua is passed in KEYS, with a retry if the supplied type snapshot is stale. Registration's C++ state-hash checks remain cross-slot and therefore are not atomic with the registry operation.
+Registration deliberately uses Lua discovery for registry sets to avoid a C++ snapshot race and bounded retry failure. Its dynamically derived keys share `{registry}`; the separate C++ state-hash checks remain cross-slot and are not atomic with registry insertion.
 
 ### 6.2 `HEARTBEAT_DESIGN.md`
 
@@ -244,7 +244,7 @@ Prioritized by impact on the system's stated goals:
 
 1. Add defensive validation for unexpected Lua result integers in C++.
 2. Update `NEWIDEA.md` and clarify the standalone-only utility limitation in the README.
-3. Add automated tests for counter underflow, overflow, malformed values, partial/corrupted indexes, stale registration snapshots, and cleanup racing with create, transition, and completion.
+3. Add automated tests for counter underflow, overflow, malformed values, partial/corrupted indexes, concurrent registration while new types are being introduced, and cleanup racing with create, transition, and completion.
 4. Run those tests against standalone Redis and Redis Cluster, including failure injection around all three cleanup phases and concurrent registration of the same ID under newly introduced types.
 
 The earlier cleanup-counter and stale-create-index findings are fixed in the current source. The remaining priority is runtime validation and recovery testing, not a redesign of the architecture.
@@ -253,4 +253,4 @@ The earlier cleanup-counter and stale-create-index findings are fixed in the cur
 
 The implementation has a strong architectural foundation. Same-slot Lua serialization, explicit lifecycle states, idempotent cleanup phases, strict normal-path counter validation, and clear Redis Cluster boundaries are all appropriate choices for this system.
 
-The reviewed source now has exact cleanup counter preflight, stale-index rejection during creation, and explicit registry Lua key declarations with stale-snapshot retry. The principal remaining confidence gap is the absence of compile, standalone Redis, and Redis Cluster tests, especially around concurrent registration and cross-slot recovery.
+The reviewed source now has exact cleanup counter preflight, stale-index rejection during creation, and Lua-discovered registry keys for registration. The principal remaining confidence gap is the absence of compile, standalone Redis, and Redis Cluster tests, especially validating dynamically derived registration keys under the target Cluster deployment and cross-slot recovery.
