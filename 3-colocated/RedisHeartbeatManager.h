@@ -95,6 +95,7 @@ private:
   /** @brief Runs cleanup scans until shutdown is requested. */
   void cleanupLoop();
 
+  bool m_enabled = false; ///< False when Redis status reporting is disabled.
   Config m_config; ///< Injected heartbeat and cleanup timing configuration.
   std::shared_ptr<RedisClient> m_client; ///< Redis client used for cleanup.
   std::mutex m_mutex; ///< Protects cleanup-thread shutdown state.
