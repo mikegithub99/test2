@@ -86,6 +86,9 @@ public:
    */
   static std::shared_ptr<RedisJobStatus> Instance(ConfigProvider provider = {});
 
+  /** @brief Returns whether Redis-backed status reporting is enabled. */
+  bool isEnabled() const noexcept { return m_enabled; }
+
   RedisJobStatus(const RedisJobStatus&) = delete;
   RedisJobStatus& operator=(const RedisJobStatus&) = delete;
 
