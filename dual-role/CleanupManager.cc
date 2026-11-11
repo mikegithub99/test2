@@ -14,6 +14,10 @@
 #include <utility>
 #include <iterator>
 #include <vector>
+#include <string>
+
+// The host application provides this registry lookup.
+std::string get_reg_val(const std::string& key);
 
 namespace
 {
@@ -67,6 +71,35 @@ std::string typeSummaryKey(const std::string& type)
 {
   return "summary:type:{" + type + "}";
 }
+CleanupManager::Config defaultConfigProvider()
+{
+  CleanupManager::Config config;
+  const auto read = [](const std::string& key, std::int64_t fallback)
+  {
+    const auto value = get_reg_val(key);
+    if (value.empty()) return fallback;
+    std::size_t parsed = 0;
+    const auto result = std::stoll(value, &parsed);
+    if (parsed != value.size() || result <= 0)
+      throw std::invalid_argument("CleanupManager: invalid " + key);
+    return result;
+  };
+
+  config.leaseTtlMilliseconds = read(
+      "cleanupManagerLeaseTtlMilliseconds", config.leaseTtlMilliseconds);
+  config.firstHeartbeatTimeoutMilliseconds = read(
+      "cleanupFirstHeartbeatTimeoutMilliseconds",
+      config.firstHeartbeatTimeoutMilliseconds);
+  config.tombstoneRetentionMilliseconds = read(
+      "cleanupTombstoneRetentionMilliseconds",
+      config.tombstoneRetentionMilliseconds);
+  config.renewalIntervalMilliseconds = read(
+      "cleanupManagerRenewalIntervalMilliseconds",
+      config.renewalIntervalMilliseconds);
+  config.scanIntervalMilliseconds = read(
+      "cleanupManagerScanIntervalMilliseconds", config.scanIntervalMilliseconds);
+  return config;
+}
 } // namespace
 
 CleanupManager::~CleanupManager()
@@ -74,14 +107,25 @@ CleanupManager::~CleanupManager()
   stop();
 }
 
-CleanupManager::CleanupManager(Config config)
-    : m_config(config)
+std::shared_ptr<CleanupManager> CleanupManager::Instance(ConfigProvider provider)
+{
+  static const std::shared_ptr<CleanupManager> instance(
+      new CleanupManager(std::move(provider)));
+  return instance;
+}
+
+CleanupManager::CleanupManager(ConfigProvider provider)
+    : m_config(provider ? provider() : defaultConfigProvider())
 {
   if (m_config.leaseTtlMilliseconds <= 0 ||
       m_config.firstHeartbeatTimeoutMilliseconds <= 0 ||
-      m_config.tombstoneRetentionMilliseconds <= 0)
+      m_config.tombstoneRetentionMilliseconds <= 0 ||
+      m_config.renewalIntervalMilliseconds <= 0 ||
+      m_config.scanIntervalMilliseconds <= 0 ||
+      m_config.renewalIntervalMilliseconds >= m_config.leaseTtlMilliseconds)
   {
-    throw std::invalid_argument("CleanupManager lease TTL must be positive");
+    throw std::invalid_argument(
+        "CleanupManager durations must be positive and renewal interval must be shorter than lease TTL");
   }
 
   const auto status = RedisJobStatus::Instance();

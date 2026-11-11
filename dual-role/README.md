@@ -151,20 +151,21 @@ A source-level review is not a substitute for Redis integration tests. Do not de
 
 ## Implementation status
 
-This directory contains the copied worker/job-status foundation, a worker-only heartbeat wrapper, per-type lease acquisition/renewal/release, and a callable single-type cleanup pass. The expiration-fence, server-cleanup, tombstone-backfill, and tombstone-collection scripts now validate the type-local lease token and positive PTTL before their first write. The scanner renews at checkpoints and compare-releases on scan failure. It is not yet a complete background service: automatic per-type discovery/campaigning, a dedicated independent renewal/control loop, scheduled scan orchestration, application startup/shutdown wiring, and production integration tests remain outstanding. Do not enable this scaffold as a production cleanup manager until those pieces are completed and validated.
+This directory contains the copied worker/job-status foundation, a worker-only heartbeat publisher, per-type lease acquisition/renewal/release, and an autonomous per-type cleanup manager. The expiration-fence, server-cleanup, tombstone-backfill, and tombstone-collection scripts validate the type-local lease token and positive PTTL before their first write. The scanner renews at checkpoints and compare-releases on scan failure. The manager discovers types, campaigns independently per type, scans only held types, and renews leases on a separate thread.
 
 
 ## Autonomous manager lifecycle — implementation update
 
-`CleanupManager::start()` launches independent loops for type discovery/campaigning/scanning and lease renewal. It discovers registered types through the `{registry}` set, competes for each type independently, and scans only types for which this process acquired authority. The renewal loop is separate from scanning so slow scans do not own the renewal cadence. `stop()` joins both loops and compare-releases held leases; the destructor calls `stop()`.
+`CleanupManager::Instance()` and `WorkerHeartbeatPublisher::Instance()` provide process-wide singleton services. Both accept a `ConfigProvider` (`std::function<Config()>`) that is evaluated once on first initialization; if omitted, defaults are read through the host's `get_reg_val()` registry. The cleanup manager reads `cleanupManagerLeaseTtlMilliseconds`, `cleanupFirstHeartbeatTimeoutMilliseconds`, `cleanupTombstoneRetentionMilliseconds`, `cleanupManagerRenewalIntervalMilliseconds`, and `cleanupManagerScanIntervalMilliseconds`. The heartbeat publisher reads `heartbeatTtlSeconds` and `heartbeatRefreshIntervalSeconds`. Pass explicit providers on the first `Instance()` call when the host uses a typed ConfigProvider service.
 
-The host application must explicitly call `start()` and `stop()`; application startup/shutdown wiring and runtime configuration mapping are not included here. Configure renewal comfortably below lease TTL. Errors fail closed and are retried. This is not production-validated: C++ compilation, automated unit tests, Redis integration tests, and Redis Cluster tests remain required.
+`CleanupManager::start()` launches independent loops for type discovery/campaigning/scanning and lease renewal. `stop()` joins both loops and compare-releases held leases. `WorkerHeartbeatPublisher::start()` starts the worker heartbeat runner. `heartbeat.cc` is the host startup/shutdown integration example: initialize host configuration, initialize/register the `RedisJobStatus` singleton, obtain both service singletons with injected providers, start both services, then stop cleanup and heartbeat during orderly shutdown. The renewal interval must be shorter than lease TTL. Errors fail closed and are retried. This is not production-validated: C++ compilation, automated unit tests, Redis integration tests, and Redis Cluster tests remain required.
 
 ## Source layout
 
-- `WorkerHeartbeatPublisher.h/.cc`: worker-only heartbeat runner wrapper.
+- `WorkerHeartbeatPublisher.h/.cc`: singleton worker-only heartbeat runner wrapper.
+- `heartbeat.cc`: host startup/shutdown integration example with injected configuration providers.
 - `CleanupManagerScripts.inc`: per-type lease acquire/renew/release and mutation-guard Lua primitives.
-- `CleanupManager.h/.cc`: per-type lease controller and callable `scanType()` cleanup pass; no autonomous manager loop yet.
+- `CleanupManager.h/.cc`: singleton per-type lease controller, autonomous campaigning/scanning, and independent renewal loop.
 - `RedisClient.h/.cc`, `RedisJobStatus.h/.cc`, `RedisJobScripts.inc`, and `HeartbeatRunner.h/.cc`: copied baseline worker/job-status implementation.
 - `browser/` and `util/`: copied dashboard and command-line utilities.
 

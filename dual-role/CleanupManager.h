@@ -8,6 +8,7 @@
 #include <atomic>
 #include <condition_variable>
 #include <cstdint>
+#include <functional>
 #include <map>
 #include <memory>
 #include <mutex>
@@ -18,9 +19,7 @@ class RedisClient;
 
 /**
  * Controls independent cleanup-manager authority for each server type.
- *
- * This class provides independent per-type discovery, campaigning, scanning,
- * and lease renewal. Worker heartbeat publication remains a separate role.
+ * One process-wide instance owns the campaigning, scanning, and renewal loops.
  */
 class CleanupManager final
 {
@@ -34,7 +33,13 @@ public:
     std::int64_t scanIntervalMilliseconds = 5000;
   };
 
-  explicit CleanupManager(Config config = {});
+  using ConfigProvider = std::function<Config()>;
+
+  /**
+   * Gets the process-wide manager. The provider is evaluated once, on first
+   * initialization. If omitted, timing values are read from get_reg_val().
+   */
+  static std::shared_ptr<CleanupManager> Instance(ConfigProvider provider = {});
   ~CleanupManager();
 
   CleanupManager(const CleanupManager&) = delete;
@@ -45,22 +50,11 @@ public:
   /** Stops background loops and compare-releases locally held type leases. */
   void stop();
 
-  /** Attempts acquisition for one type; returns true only when acquired. */
   bool acquire(const std::string& serverType);
-
-  /** Renews only the exact, still-live lease held by this instance. */
   bool renew(const std::string& serverType);
-
-  /** Runs one fenced cleanup pass for a single type, acquiring authority if needed. */
   void scanType(const std::string& serverType);
-
-  /** Compare-and-delete release. */
   bool release(const std::string& serverType);
-
-  /** Returns the token only for a locally recorded authority. */
   std::string tokenFor(const std::string& serverType) const;
-
-  /** Returns the acquired generation, or zero if not held. */
   std::int64_t generationFor(const std::string& serverType) const;
 
 private:
@@ -70,6 +64,7 @@ private:
     std::int64_t generation = 0;
   };
 
+  explicit CleanupManager(ConfigProvider provider);
   void managerLoop();
   void renewalLoop();
   static std::string leaseKey(const std::string& serverType);

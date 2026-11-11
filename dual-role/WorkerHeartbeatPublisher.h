@@ -6,25 +6,39 @@
 #define DUAL_ROLE_WORKER_HEARTBEAT_PUBLISHER_H
 
 #include <cstdint>
+#include <functional>
 #include <memory>
 #include <mutex>
 
-class RedisJobStatus;
 class HeartbeatRunner;
 
 class WorkerHeartbeatPublisher final
 {
 public:
-  WorkerHeartbeatPublisher() = default;
+  struct Config
+  {
+    std::int64_t ttlSeconds = 30;
+    std::int64_t refreshIntervalSeconds = 10;
+  };
+
+  using ConfigProvider = std::function<Config()>;
+
+  /** Process-wide singleton; provider is evaluated only on first access. */
+  static std::shared_ptr<WorkerHeartbeatPublisher> Instance(
+      ConfigProvider provider = {});
   ~WorkerHeartbeatPublisher();
 
   WorkerHeartbeatPublisher(const WorkerHeartbeatPublisher&) = delete;
   WorkerHeartbeatPublisher& operator=(const WorkerHeartbeatPublisher&) = delete;
 
-  void start(std::int64_t ttlSeconds, std::int64_t refreshIntervalSeconds);
+  /** Starts heartbeat publication using the configured timing values. */
+  void start();
   void stop();
 
 private:
+  explicit WorkerHeartbeatPublisher(ConfigProvider provider);
+
+  Config m_config;
   std::mutex m_mutex;
   std::unique_ptr<HeartbeatRunner> m_runner;
 };
