@@ -14,7 +14,7 @@ The default configuration provider used by `RedisJobStatus::Instance()` reads th
 
 `redisJobStatusEnabled` accepts `true`/`false`, `1`/`0`, and `yes`/`no`, case-insensitively. Empty or unset defaults to enabled. The singleton reads configuration on its first construction and retains that identity for the process lifetime; later configuration providers are ignored.
 
-Use the process-wide `RedisJobStatus::Instance()` as the public construction path. It retains the configured server identity and shared Redis client for the process lifetime; use the returned `shared_ptr` for registration, lifecycle calls, reads, and heartbeat publishing. The constructor is private. When disabled, result-returning mutators return `Disabled`, void mutators do nothing, and read methods return empty collections.
+Use the process-wide `RedisJobStatus::Instance()` as the public construction path. It retains the configured server identity and shared Redis client for the process lifetime; use the returned `shared_ptr` for registration, lifecycle calls, reads, and heartbeat publishing. The constructor is private. When disabled, result-returning mutators return `Disabled`, void mutators do nothing, and read methods return empty collections. `RedisHeartbeatManager::Instance()` also avoids creating a Redis client or cleanup thread; `HeartbeatStart()` and `scanOnce()` are no-ops. The normal worker startup calls can therefore be made unconditionally.
 
 Tests can inject a configuration provider on the first singleton call:
 
@@ -169,7 +169,7 @@ Type-summary metadata initialization receives the creation timestamp, metadata p
 
 ## Colocated cleanup architecture
 
-Every worker process starts its own `RedisHeartbeatManager` cleanup thread. Each manager attempts the shared `servers:{registry}:cleanup-lease` lease (30-second TTL, unique token). The holder normally scans all registered server types and IDs, so it can clean an expired worker other than itself. Lease renewal and release compare the token, preventing a stale owner from changing a successor's lease.
+Every Redis-enabled worker process starts its own `RedisHeartbeatManager` cleanup thread. Each manager attempts the shared `servers:{registry}:cleanup-lease` lease (30-second TTL, unique token). The holder normally scans all registered server types and IDs, so it can clean an expired worker other than itself. Lease renewal and release compare the token, preventing a stale owner from changing a successor's lease.
 
 The lease is a scan-load optimization, not a correctness lock. A scan may outlive the lease and overlap another scan. Per-server Lua fencing and idempotent cleanup remain authoritative.
 
