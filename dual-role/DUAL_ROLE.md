@@ -19,6 +19,80 @@ A process restart creates a new worker incarnation. The restarted process receiv
 
 The most important design caveat is Redis Cluster slot locality: the global registry lease is in the {registry} slot, while cleanup scripts operate in individual {serverType} slots. A global lease token cannot simply be checked atomically by the existing per-type Lua scripts. The implementation must explicitly choose its fencing guarantee rather than claim strict stale-primary protection that the current slot layout cannot provide.
 
+
+
+## 1.1 Architecture decision: preserve worker fencing and add manager fencing
+
+**Decision for the implementation baseline:** Preserve the existing per-worker lifecycle fencing and add per-type manager fencing. The two mechanisms are complementary and must both be enforced by the cleanup mutation scripts.
+
+This decision supersedes the earlier open choice between Target A and Target B in Section 11. Target A remains useful as historical context, but it is not the selected target for this implementation.
+
+### Assumptions
+
+1. There is one globally elected cleanup-manager primary at a time in normal operation. Standby application processes continue their own worker duties but do not scan.
+2. The global election/coordination lease remains in the {registry} slot.
+3. Each server type has manager authority represented in that type's {serverType} slot.
+4. Every cleanup mutation for a type is executed through Lua that checks the caller's current per-type manager authority in the same slot as the mutation.
+5. Existing worker lifecycle fencing remains authoritative for deciding whether an individual worker may be retired and cleaned.
+6. The global lease and per-type authority are separate layers. Acquiring the global lease alone does not authorize cleanup mutations.
+7. A new global primary is not considered ready to clean a given type until it has successfully established newer authority in that type's slot.
+8. A process that cannot positively establish or renew the required authority fails closed and does not start or continue cleanup mutations for that type.
+
+### Expectations
+
+- All application processes continue worker registration, heartbeat publishing, and job processing independently of manager leadership.
+- Only the global primary normally schedules cleanup scans.
+- Standbys do not scan.
+- A primary takeover includes establishing per-type authority before scanning those types.
+- An old primary may still hold a valid per-type authority during a bounded handoff interval after losing the global lease. The new primary must not treat global election acquisition alone as completed takeover for that type.
+- Once a newer per-type authority is established, every cleanup mutation script rejects the old generation.
+- Manager fencing does not replace, weaken, or bypass worker fencing.
+- Cleanup scripts retain their existing validation, idempotency, counter/index updates, and tombstone checks.
+
+### Core invariants
+
+1. **Worker identity invariant:** serverId is globally unique per process incarnation and is never reused.
+2. **Worker fencing invariant:** no job create/transition/complete operation may succeed after the worker's lifecycle state has been fenced to DELETING.
+3. **Manager authority invariant:** a cleanup mutation is accepted only when the supplied manager owner and generation match the current, unexpired authority record for that server type.
+4. **Same-slot invariant:** the manager authority check and the cleanup mutation occur in one Lua script and one {serverType} slot.
+5. **Monotonic generation invariant:** a type's manager generation strictly increases whenever authority is transferred; it is durable and is not reset when a lease expires.
+6. **No stale reactivation invariant:** an old manager cannot recreate, renew, or reinstate its expired authority or overwrite a newer generation.
+7. **Takeover readiness invariant:** global leadership acquisition is not sufficient to begin cleanup. The new manager must first establish per-type authority for each type it intends to scan.
+8. **Fail-closed invariant:** uncertain acquisition/renewal or mismatched/expired authority means no new cleanup mutation for that type.
+9. **Mutation coverage invariant:** every manager-owned Redis mutation in the cleanup path must be covered, not just the main job-deletion script.
+10. **Worker/manager separation invariant:** manager authority does not grant permission to modify a worker's lifecycle if worker-level eligibility checks fail.
+
+### Predicable outcomes
+
+| Event | Required outcome |
+|---|---|
+| Normal operation | One global primary scans; standby processes continue worker duties and do not scan. |
+| Standby wins global election | It prepares per-type authority; it scans a type only after that type's authority is established. |
+| Old primary resumes after newer type authority is established | Its cleanup Lua mutations for that type are rejected by generation/owner checks. |
+| Old primary loses global lease but newer per-type authority is not yet established | The old type authority may remain valid until its own expiry or revocation; the new primary must not yet scan that type. This is a bounded handoff interval, not completed takeover. |
+| Old manager's per-type authority expires | Its subsequent cleanup mutations are rejected, even if no replacement has yet acquired that type. |
+| Redis response is ambiguous | The manager treats authority as uncertain and does not initiate mutations until it positively revalidates. |
+| A type is newly discovered after global takeover | The manager must establish authority in that type slot before scanning it. |
+| A process restarts | It receives a new serverId and must acquire fresh global and per-type authority; it inherits neither old identity nor generation. |
+| Worker is already DELETING | Manager authority alone does not change worker eligibility; existing worker cleanup validation applies. |
+
+### Required per-type authority protocol properties
+
+The exact key schema and Lua API are implementation decisions, but the protocol must provide these properties:
+
+- A slot-local authority record containing the current manager owner and generation, with an expiry/lease mechanism or equivalent atomic revocation semantics.
+- A durable per-type monotonic generation allocator in the same type slot.
+- Atomic per-type acquire/transfer: the new owner can establish a strictly newer generation only when the prior authority is no longer valid under the protocol.
+- Atomic per-type renewal: only the exact current owner and generation can renew; renewal must not resurrect an expired authority.
+- Atomic per-type release: only the exact current owner and generation can release.
+- Every cleanup mutation checks owner, generation, and authority validity inside its Lua script.
+- The new primary waits for per-type authority acquisition before scheduling cleanup for that type.
+- A global lease loss stops new scheduling and causes the manager to relinquish or allow its per-type authorities to expire according to the specified handoff protocol.
+- Per-type authority TTL, global lease TTL, renewal cadence, and takeover ordering are specified together and tested under pauses, network partitions, and ambiguous Redis responses.
+
+A possible safe handoff model is that the former manager's slot-local authority expires independently; the new manager cannot establish its newer generation for that type until the old authority is no longer valid. The new manager then atomically advances the durable generation and acquires the type authority. This deliberately means global election and per-type readiness are separate events. The implementation must validate this protocol against Redis Cluster and all failure cases before coding.
+
+
 ## 2. Goals
 
 - Separate local worker heartbeat publishing from global cleanup scanning.
@@ -301,54 +375,80 @@ Optional priority tiers can prefer selected candidates, but must not allow an un
 
 Never implement acquisition as a non-atomic "check absent, then set" sequence.
 
-## 11. Redis Cluster fencing: mandatory design decision
+## 11. Redis Cluster fencing: selected design
 
-This is a correctness constraint, not an implementation footnote.
+**Selected target: global primary/standby election plus per-type manager fencing, while preserving existing per-worker lifecycle fencing.**
 
-### 11.1 Why a global token alone is insufficient
+### 11.1 Why the global token alone is insufficient
 
-The global manager lease and global generation allocator naturally belong in the {registry} slot. Cleanup scripts operate on keys in a {serverType} slot.
+The global manager lease belongs in the {registry} slot. Cleanup scripts operate on keys in a {serverType} slot. Redis Cluster Lua cannot atomically check a key in {registry} and mutate keys in {serverType}.
 
-Redis Cluster Lua cannot atomically access keys from both slots. Therefore, it is not a valid strict-fencing design to:
+Therefore, a global lease check in C++ immediately before a cleanup Lua call is not strict fencing. The manager can lose its global lease between the C++ check and the Lua mutation, or pause and resume after takeover.
 
-- Read the global registry lease from a per-type cleanup Lua script.
-- Add the registry key to a per-type script's KEYS list.
-- Assume a C++ check immediately before a per-type Lua call is equivalent to atomic fencing.
+### 11.2 Two fencing layers are required
 
-A former primary can lose leadership after the C++ check but before the per-type mutation. A paused former primary can resume after a standby takeover.
+**Worker fencing — existing and preserved**
 
-### 11.2 Two possible safety targets
+- Existing worker lifecycle state remains in the type slot.
+- Worker job create/transition/complete scripts continue checking ACTIVE state.
+- Cleanup continues to fence ACTIVE -> DELETING and validate heartbeat, job references, job ownership/status, indexes, and counters.
+- Existing idempotency and tombstone rules remain in force.
 
-The engineering owner must choose and document one.
+**Manager fencing — new and additive**
 
-**Target A — global lease for coordination; existing per-server fences remain the cleanup correctness boundary**
+- Manager authority is represented separately for each type in that type's {serverType} slot.
+- Every cleanup mutation script checks the current manager owner and generation in that same slot.
+- A stale manager generation is rejected before the script performs cleanup mutations.
+- Manager authority does not override worker lifecycle checks.
 
-- A persistent global lease elects the normal scanner.
-- Renewal is independent of scans.
-- The manager checks leadership at scan checkpoints and stops scheduling work as soon as loss is detected.
-- Existing per-server lifecycle fencing and idempotent cleanup remain authoritative for worker retirement.
-- Overlapping scans remain possible in a pause/lease-expiry race.
-- This is the smallest migration and resembles the current documented model, where the lease coordinates work but per-server Lua scripts provide correctness.
-- Do not claim that a stale manager is atomically prevented from every per-type mutation.
+### 11.3 Global election and per-type readiness are distinct
 
-This target is appropriate only if normal operation should have one scanner and overlap remains safe/acceptable.
+The global lease elects one preferred cleanup manager. It does not, by itself, authorize mutations in any type slot.
 
-**Target B — strict per-type manager fencing**
+After acquiring global leadership, the new manager must establish per-type authority for each type before scanning it. The system must define takeover as complete for a type only after the newer authority is committed in that type's slot.
 
-- Every cleanup mutation validates manager authority in the same {serverType} slot as the mutation.
-- This requires a fully specified slot-local authority/lease/epoch protocol for each type, or a key-slot architecture redesign.
-- A global election may nominate a preferred manager, but the type slot must reject stale generations atomically.
-- The protocol must prevent an old manager from installing or using an older generation after a newer generation has been accepted.
-- Asynchronously copying a global generation into each type slot is not sufficient by itself: before the new generation is installed in a slot, an old manager could still act there.
-- Independently elected per-type ownership may result in different managers cleaning different types. That is a sharded manager design, not one globally exclusive scanner.
+This distinction is essential during handoff. Until the new generation is installed, the former manager's per-type authority may still be valid. The new manager must not scan that type during this interval. The protocol must bound this interval using slot-local authority expiry/revocation and must ensure an expired authority cannot be used or renewed.
 
-Do not implement Target B by merely adding a per-type epoch key and asynchronously writing the global epoch to it. The activation barrier and ordering are part of the correctness protocol.
+### 11.4 Required per-type authority protocol
 
-### 11.3 Recommended staging
+The exact key names and Lua script boundaries are implementation decisions. The protocol must guarantee:
 
-If the immediate goal is to reduce 100 concurrent scanners to one normal scanner, Target A is the smallest migration. It must explicitly document the residual stale-manager overlap window and prove existing per-server cleanup remains safe under overlap.
+1. A durable, monotonically increasing generation per server type.
+2. A slot-local authority record identifying owner, generation, and validity/expiry.
+3. Atomic acquire/transfer that cannot replace a still-valid owner and cannot install an older generation.
+4. Renewal only by the exact current owner and generation.
+5. Renewal cannot recreate an expired authority.
+6. Release only by the exact current owner and generation.
+7. Every manager-owned cleanup mutation validates owner, generation, and authority validity inside its Lua script.
+8. The new global primary cannot scan a type until it has acquired that type's authority.
+9. A former primary cannot regain authority using stale local state or an old generation.
+10. Newly discovered types must go through the same authority-acquisition barrier before scanning.
 
-If the requirement is strict rejection of every stale-primary cleanup mutation, stop before implementation and complete Target B or a key-slot redesign. Do not describe Target A as strict fencing.
+A viable protocol may use a slot-local expiring authority lease plus a durable generation key. When the old slot-local lease expires, its owner is rejected by cleanup scripts; a successor can then atomically advance the generation and acquire authority. This is a design direction, not an approved implementation until its Redis Lua atomicity, expiry behavior, and failure cases are specified and tested.
+
+### 11.5 Mutation coverage
+
+Review every cleanup-path mutation, not only the primary job cleanup script. At minimum assess:
+
+- Per-server lifecycle fencing and tombstone creation.
+- Per-server job/index/counter/heartbeat/live-set cleanup.
+- Tombstone backfill and registry/tombstone maintenance.
+- Retired tombstone collection.
+- Any repair, reset, or administrative operation that can mutate the same cleanup state.
+
+Read-only registry enumeration need not necessarily carry type authority, but no mutation may bypass the manager-authority rule. Cross-slot registry operations must remain outside per-type Lua scripts and be treated as separate coordination steps.
+
+### 11.6 Redis Cluster layout
+
+Preserve the existing {registry} and {serverType} hash tags. New manager authority and generation keys for a type must use that type's existing hash tag so the authority check and type cleanup mutation can execute atomically.
+
+Do not put the global registry lease key into a per-type Lua script. Do not assume asynchronous copying of a global epoch into type slots is sufficient.
+
+### 11.7 Expected guarantee and limitation
+
+After a newer generation has been established in a type slot, cleanup mutation scripts reject the former primary for that type. Before that per-type handoff is complete, the old slot-local authority may remain valid until its defined expiry/revocation point; the successor must not scan that type yet.
+
+The architecture therefore provides strict stale-manager rejection **after per-type authority transfer**, not instant cross-slot revocation at the moment the global lease changes owner. If the requirement is instead that all type slots reject the old manager at the exact instant the global lease changes, Redis Cluster's cross-slot constraint requires a different key-slot architecture or another coordination design.
 
 ## 12. C++ component responsibilities and integration
 
@@ -495,18 +595,22 @@ For each race, tests must assert resulting lifecycle state and counter/index con
 
 ## 16. Implementation phases
 
-### Phase 0 — choose the fencing target
+### Phase 0 — specify and review the selected dual-fencing protocol
 
 Before coding:
 
-- Choose Target A or Target B from Section 11.
-- Record whether brief overlapping scans are acceptable.
-- Define failover-time objective.
-- Define manager eligibility and candidate priority.
+- Preserve existing worker lifecycle fencing; do not replace it.
+- Specify global primary/standby election separately from per-type authority acquisition.
+- Define the per-type authority record, durable generation allocator, TTL, renewal, release, and takeover barrier.
+- Define when takeover is considered complete for each type.
+- Define behavior for a former manager during the interval between global lease loss and per-type authority expiry/transfer.
+- Inventory every cleanup mutation and identify the Lua authority check that protects it.
+- Define handling for newly discovered server types.
 - Verify the globally unique, never-reused serverId guarantee.
 - Review actual key builders and Lua KEYS lists for Cluster slot boundaries.
+- Prove that no stale generation can renew, reacquire, or overwrite a newer generation.
 
-**Exit criterion:** written design decision with no overstatement of fencing guarantees.
+**Exit criterion:** reviewed protocol specification and failure-state table, with no claim of instantaneous cross-slot revocation.
 
 ### Phase 1 — separate worker heartbeat and cleanup lifecycles
 
@@ -539,12 +643,17 @@ Before coding:
 
 **Exit criterion:** only the active manager normally scans; loss of leadership stops new scan work.
 
-### Phase 4 — implement the selected fencing design
+### Phase 4 — implement per-type manager fencing
 
-- For Target A, document and test the residual stale-manager race and overlap safety.
-- For Target B, implement and prove the slot-local authority protocol or key-slot redesign before enabling mutations.
+- Add durable per-type monotonic generation and slot-local manager authority.
+- Implement atomic acquire/transfer, renew, and release operations.
+- Add manager owner/generation/validity checks to every cleanup mutation script.
+- Keep existing worker lifecycle checks and cleanup validation intact.
+- Enforce the per-type readiness barrier before scanning each type.
+- Test old-manager pause/resume, lease expiry, ambiguous Redis results, and type-by-type takeover.
+- Ensure a type is never scanned by the successor before its newer authority is established.
 
-**Exit criterion:** tests demonstrate the exact fencing guarantee claimed by the design.
+**Exit criterion:** tests prove that after per-type authority transfer, every stale-manager cleanup mutation is rejected, while existing worker-fencing behavior remains unchanged.
 
 ### Phase 5 — staged rollout
 
@@ -589,13 +698,19 @@ Do not run the old all-worker scanners and new leader scanner concurrently durin
 - Two standbys race to take over.
 - Redis timeout during renewal and release.
 
-### Cleanup regression
+### Cleanup and dual-fencing regression
 - Existing per-server fence rejects job mutations after DELETING.
-- Cleanup remains idempotent under permitted overlap.
+- Existing worker lifecycle checks remain present in all relevant job and cleanup scripts.
+- A manager with the current type owner/generation can perform authorized cleanup.
+- A former manager with an older generation is rejected by every cleanup mutation script after authority transfer.
+- An expired type authority cannot be renewed or used.
+- A new manager cannot scan a type before establishing its authority there.
+- Type-by-type takeover remains safe when Redis calls time out or return ambiguous results.
 - Type/server counters and indexes remain consistent.
-- Tombstone backfill and collection remain safe.
+- Tombstone backfill and collection are covered by manager authority.
 - Multi-type cleanup respects Redis Cluster slots.
 - Lua scripts use explicit keys and no cross-slot key access.
+- A manager authority failure does not bypass or weaken worker lifecycle fencing.
 
 ### Load
 - 100 processes publish heartbeats.
@@ -614,22 +729,28 @@ Do not declare completion based only on source inspection. Run unit/integration 
 4. A standby takes over after lease expiry within the agreed failover objective.
 5. A restarted former primary receives a new serverId and does not inherit old manager authority.
 6. Renewal and release are owner/generation checked.
-7. A stale manager cannot mutate beyond the guarantee of the selected fencing target.
-8. Existing worker lifecycle and job accounting invariants remain intact.
-9. All Lua scripts respect Redis Cluster slot constraints.
-10. Metrics expose leader, standby, renewal, scan, and failover behavior.
-11. Crash, pause/resume, failover, and counter-consistency tests pass.
-12. Documentation and implementation agree about whether stale-manager overlap remains possible.
+7. After newer per-type authority is established, a stale manager cannot execute any covered cleanup mutation for that type.
+8. No successor scans a type before establishing its per-type authority.
+9. Existing worker lifecycle and job accounting invariants remain intact.
+10. All Lua scripts respect Redis Cluster slot constraints.
+11. Metrics expose global leader, per-type authority owner/generation, standby, renewal, scan, and failover behavior.
+12. Crash, pause/resume, per-type handoff, failover, and counter-consistency tests pass.
+13. Documentation and implementation agree about the per-type handoff interval and stale-manager guarantee.
 
 ## 19. Final architecture
 
 - Every application process is a worker for its own globally unique process-incarnation serverId.
 - Every eligible worker is a cleanup-manager candidate.
-- One candidate normally owns cleanup leadership.
-- Standbys continue their own heartbeat and job processing.
-- A restarted process is a new worker and manager candidate; it never inherits the previous process's leadership.
-- Manager owner identity can be the current serverId, but manager fencing generation is separate and monotonic.
-- Worker lifecycle fencing and manager leadership fencing solve different problems.
-- The global lease coordinates election; strict stale-manager rejection must be enforced in the same Redis Cluster slot as each cleanup mutation.
+- One candidate normally owns global cleanup leadership; standbys continue worker responsibilities and do not scan.
+- Global leadership is coordination, not sufficient authority to mutate per-type cleanup data.
+- The global primary must establish per-type manager authority before scanning each type.
+- Each type's manager authority and durable generation live in that type's {serverType} slot.
+- Every cleanup mutation validates current manager owner/generation/validity atomically in the same type slot.
+- A former primary is rejected by cleanup mutation scripts after a newer generation is established for that type.
+- During handoff, the successor does not scan a type until its newer authority is established; old slot-local authority may remain valid until its defined expiry/revocation point.
+- Existing worker lifecycle fencing remains intact and is checked in addition to manager authority.
+- Worker fencing protects against stale workers; manager fencing protects against stale cleanup managers.
+- The two mechanisms are additive and solve different problems.
+- Manager owner identity may be the current serverId, but manager generation is separate, durable, and monotonically increasing per type.
 
-Implementation should start by separating the worker heartbeat publisher from the cleanup scanner, then adding persistent manager election. The Redis Cluster fencing target must be settled before claiming a former primary is strictly unable to mutate cleanup state after takeover.
+Implementation should first specify and test the per-type authority handoff protocol against Redis Cluster constraints. Then separate worker heartbeat publishing from cleanup scanning, implement global primary/standby election, add per-type manager authority, and integrate the scanner so it cannot mutate a type without both current manager authority and the existing worker lifecycle checks.
