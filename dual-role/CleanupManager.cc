@@ -69,6 +69,11 @@ std::string typeSummaryKey(const std::string& type)
 }
 } // namespace
 
+CleanupManager::~CleanupManager()
+{
+  stop();
+}
+
 CleanupManager::CleanupManager(Config config)
     : m_config(config)
 {
@@ -329,6 +334,68 @@ void CleanupManager::scanType(const std::string& type)
   {
     try { release(type); } catch (...) {}
     throw;
+  }
+}
+
+
+void CleanupManager::start()
+{
+  if (!m_client) return;
+  bool expected = false;
+  if (!m_running.compare_exchange_strong(expected, true)) return;
+  m_managerThread = std::thread(&CleanupManager::managerLoop, this);
+  m_renewalThread = std::thread(&CleanupManager::renewalLoop, this);
+}
+
+void CleanupManager::stop()
+{
+  if (!m_running.exchange(false)) return;
+  m_wake.notify_all();
+  if (m_managerThread.joinable()) m_managerThread.join();
+  if (m_renewalThread.joinable()) m_renewalThread.join();
+  std::vector<std::string> types;
+  { std::lock_guard<std::mutex> lock(m_mutex);
+    for (const auto& entry : m_authorities) types.push_back(entry.first); }
+  for (const auto& type : types) { try { release(type); } catch (...) {} }
+}
+
+void CleanupManager::managerLoop()
+{
+  while (m_running.load())
+  {
+    try
+    {
+      const auto types = RedisJobStatus::Instance()->getServerTypes();
+      for (const auto& type : types)
+      {
+        if (!m_running.load()) break;
+        if (!acquire(type)) continue;
+        try { scanType(type); } catch (...) { /* retry next cycle */ }
+      }
+    }
+    catch (...) { /* fail closed; retry discovery */ }
+    std::unique_lock<std::mutex> lock(m_wakeMutex);
+    m_wake.wait_for(lock, std::chrono::milliseconds(m_config.scanIntervalMilliseconds),
+                    [this] { return !m_running.load(); });
+  }
+}
+
+void CleanupManager::renewalLoop()
+{
+  while (m_running.load())
+  {
+    std::vector<std::string> types;
+    { std::lock_guard<std::mutex> lock(m_mutex);
+      for (const auto& entry : m_authorities) types.push_back(entry.first); }
+    for (const auto& type : types)
+    {
+      if (!m_running.load()) break;
+      try { renew(type); }
+      catch (...) { std::lock_guard<std::mutex> lock(m_mutex); m_authorities.erase(type); }
+    }
+    std::unique_lock<std::mutex> lock(m_wakeMutex);
+    m_wake.wait_for(lock, std::chrono::milliseconds(m_config.renewalIntervalMilliseconds),
+                    [this] { return !m_running.load(); });
   }
 }
 

@@ -5,11 +5,14 @@
 #ifndef DUAL_ROLE_CLEANUP_MANAGER_H
 #define DUAL_ROLE_CLEANUP_MANAGER_H
 
+#include <atomic>
+#include <condition_variable>
 #include <cstdint>
 #include <map>
 #include <memory>
 #include <mutex>
 #include <string>
+#include <thread>
 
 class RedisClient;
 
@@ -27,13 +30,20 @@ public:
     std::int64_t leaseTtlMilliseconds = 30000;
     std::int64_t firstHeartbeatTimeoutMilliseconds = 60000;
     std::int64_t tombstoneRetentionMilliseconds = 86400000;
+    std::int64_t renewalIntervalMilliseconds = 10000;
+    std::int64_t scanIntervalMilliseconds = 5000;
   };
 
   explicit CleanupManager(Config config = {});
-  ~CleanupManager() = default;
+  ~CleanupManager();
 
   CleanupManager(const CleanupManager&) = delete;
   CleanupManager& operator=(const CleanupManager&) = delete;
+
+  /** Starts automatic per-type discovery, campaigning, scanning, and renewal. */
+  void start();
+  /** Stops background loops and compare-releases locally held type leases. */
+  void stop();
 
   /** Attempts acquisition for one type; returns true only when acquired. */
   bool acquire(const std::string& serverType);
@@ -60,6 +70,8 @@ private:
     std::int64_t generation = 0;
   };
 
+  void managerLoop();
+  void renewalLoop();
   static std::string leaseKey(const std::string& serverType);
   static std::string generationKey(const std::string& serverType);
   std::string makeOwnerPrefix() const;
@@ -69,6 +81,11 @@ private:
   std::string m_ownerPrefix;
   mutable std::mutex m_mutex;
   std::map<std::string, Authority> m_authorities;
+  std::atomic<bool> m_running{false};
+  std::condition_variable m_wake;
+  std::mutex m_wakeMutex;
+  std::thread m_managerThread;
+  std::thread m_renewalThread;
 };
 
 #endif

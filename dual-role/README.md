@@ -153,6 +153,13 @@ A source-level review is not a substitute for Redis integration tests. Do not de
 
 This directory contains the copied worker/job-status foundation, a worker-only heartbeat wrapper, per-type lease acquisition/renewal/release, and a callable single-type cleanup pass. The expiration-fence, server-cleanup, tombstone-backfill, and tombstone-collection scripts now validate the type-local lease token and positive PTTL before their first write. The scanner renews at checkpoints and compare-releases on scan failure. It is not yet a complete background service: automatic per-type discovery/campaigning, a dedicated independent renewal/control loop, scheduled scan orchestration, application startup/shutdown wiring, and production integration tests remain outstanding. Do not enable this scaffold as a production cleanup manager until those pieces are completed and validated.
 
+
+## Autonomous manager lifecycle — implementation update
+
+`CleanupManager::start()` launches independent loops for type discovery/campaigning/scanning and lease renewal. It discovers registered types through the `{registry}` set, competes for each type independently, and scans only types for which this process acquired authority. The renewal loop is separate from scanning so slow scans do not own the renewal cadence. `stop()` joins both loops and compare-releases held leases; the destructor calls `stop()`.
+
+The host application must explicitly call `start()` and `stop()`; application startup/shutdown wiring and runtime configuration mapping are not included here. Configure renewal comfortably below lease TTL. Errors fail closed and are retried. This is not production-validated: C++ compilation, automated unit tests, Redis integration tests, and Redis Cluster tests remain required.
+
 ## Source layout
 
 - `WorkerHeartbeatPublisher.h/.cc`: worker-only heartbeat runner wrapper.
