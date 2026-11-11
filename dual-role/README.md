@@ -161,4 +161,4 @@ This directory contains the copied worker/job-status foundation, a worker-only h
 - `RedisClient.h/.cc`, `RedisJobStatus.h/.cc`, `RedisJobScripts.inc`, and `HeartbeatRunner.h/.cc`: copied baseline worker/job-status implementation.
 - `browser/` and `util/`: copied dashboard and command-line utilities.
 
-The existing `3-colocated/` baseline is intentionally unchanged. This directory is the separate implementation track.
+The earlier `DUAL_ROLE.md` global-primary proposal is retained as historical design material only; its candidate/rebalancing discussion is reference material and is superseded wherever it conflicts with this Option 2 README. The existing `3-colocated/` baseline is intentionally unchanged. This directory is the separate implementation track.

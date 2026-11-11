@@ -72,7 +72,9 @@ std::string typeSummaryKey(const std::string& type)
 CleanupManager::CleanupManager(Config config)
     : m_config(config)
 {
-  if (m_config.leaseTtlMilliseconds <= 0 ||\n      m_config.firstHeartbeatTimeoutMilliseconds <= 0 ||\n      m_config.tombstoneRetentionMilliseconds <= 0)
+  if (m_config.leaseTtlMilliseconds <= 0 ||
+      m_config.firstHeartbeatTimeoutMilliseconds <= 0 ||
+      m_config.tombstoneRetentionMilliseconds <= 0)
   {
     throw std::invalid_argument("CleanupManager lease TTL must be positive");
   }

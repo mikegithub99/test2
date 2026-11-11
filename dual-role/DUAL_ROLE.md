@@ -1,3 +1,7 @@
+> **Architecture status (2026-11-11):** This document contains the earlier global-primary proposal and is retained as design history. It is superseded by [README.md](README.md), which records the selected Option 2 architecture: one independently elected cleanup manager per server type. Do not implement the global-primary election described below. The candidate selection, balancing, failure analysis, and rebalancing discussion below are retained for reference and must be interpreted through the Option 2 design in README.md.
+
+---
+
 # Dual-Role Worker and Cleanup-Manager Architecture
 
 **Status:** Architecture proposal and implementation plan only. No source-code changes are included.
