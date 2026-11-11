@@ -67,6 +67,12 @@ private:
   explicit CleanupManager(ConfigProvider provider);
   void managerLoop();
   void renewalLoop();
+  void eraseAuthorityIfMatches(
+      const std::string& serverType,
+      const std::string& token);
+  bool releaseToken(
+      const std::string& serverType,
+      const std::string& token);
   static std::string leaseKey(const std::string& serverType);
   static std::string generationKey(const std::string& serverType);
   std::string makeOwnerPrefix() const;

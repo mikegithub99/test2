@@ -192,7 +192,13 @@ bool CleanupManager::acquire(const std::string& type)
   authority.token = acquired[2];
 
   std::lock_guard<std::mutex> lock(m_mutex);
-  m_authorities[type] = std::move(authority);
+  const auto current = m_authorities.find(type);
+  // A delayed acquire response must not overwrite a newer local generation.
+  if (current == m_authorities.end() ||
+      current->second.generation < authority.generation)
+  {
+    m_authorities[type] = std::move(authority);
+  }
   return true;
 }
 
@@ -218,11 +224,40 @@ bool CleanupManager::renew(const std::string& type)
 
   if (renewed != 1)
   {
-    std::lock_guard<std::mutex> lock(m_mutex);
-    m_authorities.erase(type);
+    eraseAuthorityIfMatches(type, authority.token);
     return false;
   }
   return true;
+}
+
+void CleanupManager::eraseAuthorityIfMatches(
+    const std::string& type,
+    const std::string& token)
+{
+  std::lock_guard<std::mutex> lock(m_mutex);
+  const auto it = m_authorities.find(type);
+  if (it != m_authorities.end() && it->second.token == token)
+  {
+    m_authorities.erase(it);
+  }
+}
+
+bool CleanupManager::releaseToken(
+    const std::string& type,
+    const std::string& token)
+{
+  if (!m_client || token.empty()) return false;
+
+  const std::vector<std::string> keys = {leaseKey(type)};
+  const std::vector<std::string> args = {token};
+  const auto released = m_client->execute([&](auto& redis)
+  {
+    return evalInt(redis, kReleaseTypeCleanupManagerScript, keys, args);
+  });
+
+  // Do not erase a newer authority installed while Redis I/O was in flight.
+  eraseAuthorityIfMatches(type, token);
+  return released == 1;
 }
 
 bool CleanupManager::release(const std::string& type)
@@ -236,17 +271,7 @@ bool CleanupManager::release(const std::string& type)
     if (it == m_authorities.end()) return false;
     authority = it->second;
   }
-
-  const std::vector<std::string> keys = {leaseKey(type)};
-  const std::vector<std::string> args = {authority.token};
-  const auto released = m_client->execute([&](auto& redis)
-  {
-    return evalInt(redis, kReleaseTypeCleanupManagerScript, keys, args);
-  });
-
-  std::lock_guard<std::mutex> lock(m_mutex);
-  m_authorities.erase(type);
-  return released == 1;
+  return releaseToken(type, authority.token);
 }
 
 std::string CleanupManager::tokenFor(const std::string& type) const
@@ -376,7 +401,8 @@ void CleanupManager::scanType(const std::string& type)
   }
   catch (...)
   {
-    try { release(type); } catch (...) {}
+    // Release only the authority captured by this scan.
+    try { releaseToken(type, token); } catch (...) {}
     throw;
   }
 }
@@ -428,14 +454,17 @@ void CleanupManager::renewalLoop()
 {
   while (m_running.load())
   {
-    std::vector<std::string> types;
-    { std::lock_guard<std::mutex> lock(m_mutex);
-      for (const auto& entry : m_authorities) types.push_back(entry.first); }
-    for (const auto& type : types)
+    std::vector<std::pair<std::string, std::string>> authorities;
+    {
+      std::lock_guard<std::mutex> lock(m_mutex);
+      for (const auto& entry : m_authorities)
+        authorities.emplace_back(entry.first, entry.second.token);
+    }
+    for (const auto& entry : authorities)
     {
       if (!m_running.load()) break;
-      try { renew(type); }
-      catch (...) { std::lock_guard<std::mutex> lock(m_mutex); m_authorities.erase(type); }
+      try { renew(entry.first); }
+      catch (...) { eraseAuthorityIfMatches(entry.first, entry.second); }
     }
     std::unique_lock<std::mutex> lock(m_wakeMutex);
     m_wake.wait_for(lock, std::chrono::milliseconds(m_config.renewalIntervalMilliseconds),

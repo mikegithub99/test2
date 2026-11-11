@@ -158,7 +158,15 @@ This directory contains the copied worker/job-status foundation, a worker-only h
 
 `CleanupManager::Instance()` and `WorkerHeartbeatPublisher::Instance()` provide process-wide singleton services. Both accept a `ConfigProvider` (`std::function<Config()>`) that is evaluated once on first initialization; if omitted, defaults are read through the host's `get_reg_val()` registry. The cleanup manager reads `cleanupManagerLeaseTtlMilliseconds`, `cleanupFirstHeartbeatTimeoutMilliseconds`, `cleanupTombstoneRetentionMilliseconds`, `cleanupManagerRenewalIntervalMilliseconds`, and `cleanupManagerScanIntervalMilliseconds`. The heartbeat publisher reads `heartbeatTtlSeconds` and `heartbeatRefreshIntervalSeconds`. Pass explicit providers on the first `Instance()` call when the host uses a typed ConfigProvider service.
 
-`CleanupManager::start()` launches independent loops for type discovery/campaigning/scanning and lease renewal. `stop()` joins both loops and compare-releases held leases. `WorkerHeartbeatPublisher::start()` starts the worker heartbeat runner. `heartbeat.cc` is the host startup/shutdown integration example: initialize host configuration, initialize/register the `RedisJobStatus` singleton, obtain both service singletons with injected providers, start both services, then stop cleanup and heartbeat during orderly shutdown. The renewal interval must be shorter than lease TTL. Errors fail closed and are retried. This is not production-validated: C++ compilation, automated unit tests, Redis integration tests, and Redis Cluster tests remain required.
+`CleanupManager::start()` launches independent loops for type discovery/campaigning/scanning and lease renewal. `stop()` joins both loops and compare-releases held leases. `WorkerHeartbeatPublisher::start()` starts the worker heartbeat runner. `heartbeat.cc` is the host startup/shutdown integration example: initialize host configuration, initialize/register the `RedisJobStatus` singleton, obtain both service singletons with injected providers, start both services, then stop cleanup and heartbeat during orderly shutdown. The renewal interval must be shorter than lease TTL. Errors fail closed and are retried.
+
+### Authority-map race fix
+
+Authority-map updates are token/generation aware. An acquire response is installed only if its generation is not older than the authority already recorded locally. Renewal failures and exception handling remove an entry only when the map still contains the exact token used by that operation. Release and scan-failure cleanup use a token-specific compare-release path, so an older scan/release cannot erase or release a newer generation acquired for the same type. The renewal loop snapshots each token and uses that snapshot for conditional cleanup after an exception.
+
+This closes the source-level race where a delayed renew/release completion could erase a newer local authority. It does not replace runtime concurrency tests: specifically exercise delayed acquire responses, renew-vs-reacquire, release-vs-reacquire, scan failure during reacquisition, and ambiguous Redis responses.
+
+This is not production-validated: C++ compilation, automated unit tests, Redis integration tests, and Redis Cluster tests remain required.
 
 ## Source layout
 
