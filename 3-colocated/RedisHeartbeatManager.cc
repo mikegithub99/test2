@@ -137,9 +137,16 @@ int64_t evalScript(
  * @throws std::invalid_argument if a configured duration is not positive.
  */
 RedisHeartbeatManager::RedisHeartbeatManager(ConfigProvider provider)
-    : m_config(provider ? provider() : Config{}),
-      m_client(RedisClient::Instance())
 {
+  // Resolve the status configuration first. When disabled, do not initialize
+  // Redis, validate heartbeat timing, or start the cleanup thread.
+  const auto status = RedisJobStatus::Instance();
+  if (!status->isEnabled())
+  {
+    return;
+  }
+
+  m_config = provider ? provider() : Config{};
   if (m_config.heartbeatTtlSeconds <= 0 ||
       m_config.heartbeatRefreshIntervalSeconds <= 0 ||
       m_config.cleanupLeaseTtlMilliseconds <= 0 ||
@@ -152,6 +159,8 @@ RedisHeartbeatManager::RedisHeartbeatManager(ConfigProvider provider)
         "RedisHeartbeatManager: all configured durations must be positive");
   }
 
+  m_client = RedisClient::Instance();
+  m_enabled = true;
   m_cleanupThread = std::thread(&RedisHeartbeatManager::cleanupLoop, this);
 }
 
@@ -181,6 +190,10 @@ std::shared_ptr<RedisHeartbeatManager> RedisHeartbeatManager::Instance(
 void RedisHeartbeatManager::HeartbeatStart()
 {
   const auto status = RedisJobStatus::Instance();
+  if (!m_enabled || !status->isEnabled())
+  {
+    return;
+  }
 
   std::lock_guard<std::mutex> lock(m_heartbeatMutex);
 
@@ -261,6 +274,11 @@ void RedisHeartbeatManager::cleanupLoop()
  */
 void RedisHeartbeatManager::scanOnce()
 {
+  if (!m_enabled)
+  {
+    return;
+  }
+
   const string token = ownerToken();
   const vector<string> leaseKeys = {cleanupLeaseKey()};
   const vector<string> acquireArgs = {
