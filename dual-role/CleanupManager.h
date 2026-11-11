@@ -16,8 +16,8 @@ class RedisClient;
 /**
  * Controls independent cleanup-manager authority for each server type.
  *
- * This class implements lease acquisition, renewal, and release only. A
- * scanner must pass the returned token to every protected mutation script.
+ * This class provides independent per-type discovery, campaigning, scanning,
+ * and lease renewal. Worker heartbeat publication remains a separate role.
  */
 class CleanupManager final
 {
