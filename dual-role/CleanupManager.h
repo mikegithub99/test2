@@ -25,6 +25,8 @@ public:
   struct Config
   {
     std::int64_t leaseTtlMilliseconds = 30000;
+    std::int64_t firstHeartbeatTimeoutMilliseconds = 60000;
+    std::int64_t tombstoneRetentionMilliseconds = 86400000;
   };
 
   explicit CleanupManager(Config config = {});
@@ -38,6 +40,9 @@ public:
 
   /** Renews only the exact, still-live lease held by this instance. */
   bool renew(const std::string& serverType);
+
+  /** Runs one fenced cleanup pass for a single type, acquiring authority if needed. */
+  void scanType(const std::string& serverType);
 
   /** Compare-and-delete release. */
   bool release(const std::string& serverType);

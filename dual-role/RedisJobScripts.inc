@@ -463,12 +463,17 @@ return 1
 // ---------------------------------------------------------------------------
 
 const char* const kFenceExpiredServerScript = R"lua(
-local heartbeat = KEYS[1]
-local state = KEYS[2]
-local serverJobs = KEYS[3]
-local serverSummary = KEYS[4]
-local live = KEYS[5]
-local retired = KEYS[6]
+local managerLease = KEYS[1]
+if redis.call('GET', managerLease) ~= ARGV[1] or
+   redis.call('PTTL', managerLease) <= 0 then
+  return -10 -- RESULT_STALE_CLEANUP_MANAGER
+end
+local heartbeat = KEYS[2]
+local state = KEYS[3]
+local serverJobs = KEYS[4]
+local serverSummary = KEYS[5]
+local live = KEYS[6]
+local retired = KEYS[7]
 local ht = redis.call('TYPE', heartbeat).ok
 local st = redis.call('TYPE', state).ok
 local jt = redis.call('TYPE', serverJobs).ok
@@ -487,7 +492,7 @@ end
 
 if redis.call('EXISTS', heartbeat) == 1 then return 0 end
 
-local current = redis.call('HGET', state, ARGV[1])
+local current = redis.call('HGET', state, ARGV[2])
 local function redisTimeMs()
   local now = redis.call('TIME')
   return tonumber(now[1]) * 1000 + math.floor(tonumber(now[2]) / 1000)
@@ -495,11 +500,11 @@ end
 
 if current == 'DELETING' then
   -- Backfill older tombstones if the retired index did not exist yet.
-  if not redis.call('ZSCORE', retired, ARGV[1]) then
-    redis.call('ZADD', retired, tostring(redisTimeMs()), ARGV[1])
+  if not redis.call('ZSCORE', retired, ARGV[2]) then
+    redis.call('ZADD', retired, tostring(redisTimeMs()), ARGV[2])
   end
   if jt == 'none' and mt == 'none' and
-     redis.call('SISMEMBER', live, ARGV[1]) == 0 then return 2 end
+     redis.call('SISMEMBER', live, ARGV[2]) == 0 then return 2 end
   return 1
 end
 if current ~= 'ACTIVE' then return 0 end
@@ -508,17 +513,17 @@ if current ~= 'ACTIVE' then return 0 end
 -- allow startup only until the registration grace period expires. New
 -- registrations store the Redis-generated timestamp in server metadata;
 -- fall back to the old state-hash field for rolling upgrades.
-local hasHeartbeated = redis.call('SISMEMBER', live, ARGV[1]) == 1
+local hasHeartbeated = redis.call('SISMEMBER', live, ARGV[2]) == 1
 if not hasHeartbeated then
   local registeredAt = tonumber(redis.call(
       'HGET', serverSummary, 'meta:registeredAt') or
-      redis.call('HGET', state, 'registeredAt:' .. ARGV[1]) or '')
-  local timeoutMs = tonumber(ARGV[2])
+      redis.call('HGET', state, 'registeredAt:' .. ARGV[2]) or '')
+  local timeoutMs = tonumber(ARGV[3])
   if not registeredAt or not timeoutMs or timeoutMs <= 0 then return 0 end
   if redisTimeMs() - registeredAt < timeoutMs then return 0 end
 end
-redis.call('HSET', state, ARGV[1], 'DELETING')
-redis.call('ZADD', retired, tostring(redisTimeMs()), ARGV[1])
+redis.call('HSET', state, ARGV[2], 'DELETING')
+redis.call('ZADD', retired, tostring(redisTimeMs()), ARGV[2])
 return 1
 )lua";
 
@@ -527,19 +532,24 @@ return 1
 // candidate job hashes in the same order as ARGV[3..]. ARGV[1]=serverId,
 // ARGV[2]=job count, ARGV[3..2+count]=composite refs, ARGV[3+count]=type.
 const char* const kCleanupExpiredServerScript = R"lua(
-local live = KEYS[1]
-local state = KEYS[2]
-local heartbeat = KEYS[3]
-local serverJobs = KEYS[4]
-local typeJobs = KEYS[5]
-local serverSummary = KEYS[6]
-local typeSummary = KEYS[7]
-local serverId = ARGV[1]
-local count = tonumber(ARGV[2])
-local serverType = ARGV[3 + (count or 0)]
+local managerLease = KEYS[1]
+if redis.call('GET', managerLease) ~= ARGV[1] or
+   redis.call('PTTL', managerLease) <= 0 then
+  return -10 -- RESULT_STALE_CLEANUP_MANAGER
+end
+local live = KEYS[2]
+local state = KEYS[3]
+local heartbeat = KEYS[4]
+local serverJobs = KEYS[5]
+local typeJobs = KEYS[6]
+local serverSummary = KEYS[7]
+local typeSummary = KEYS[8]
+local serverId = ARGV[2]
+local count = tonumber(ARGV[3])
+local serverType = ARGV[4 + (count or 0)]
 
 if not count or count < 0 or count ~= math.floor(count) or
-   #KEYS ~= 7 + count or #ARGV ~= 3 + count then
+   #KEYS ~= 8 + count or #ARGV ~= 4 + count then
   return redis.error_reply('invalid cleanup arguments')
 end
 
@@ -574,7 +584,7 @@ if #refs ~= count then
   return redis.error_reply('server job index changed during cleanup preflight')
 end
 local supplied = {}
-for i = 1, count do supplied[ARGV[2 + i]] = true end
+for i = 1, count do supplied[ARGV[3 + i]] = true end
 for _, ref in ipairs(refs) do
   if not supplied[ref] then
     return redis.error_reply('server job reference missing from cleanup arguments')
@@ -585,7 +595,7 @@ local pending, active, suspended, total = 0, 0, 0, 0
 local jobKeys = {}
 for i = 1, count do
   local ref = ARGV[2 + i]
-  local jobKey = KEYS[7 + i]
+  local jobKey = KEYS[8 + i]
   if keytype(jobKey) ~= 'hash' then
     return redis.error_reply('missing or wrong-type job hash')
   end
@@ -752,8 +762,13 @@ return redis.call('DEL', key)
 // Backfill tombstones created before the retired sorted set was deployed.
 // HSCAN is incremental; ZADD NX preserves any existing original retirement time.
 const char* const kIndexUntrackedTombstonesScript = R"lua(
-local state = KEYS[1]
-local retired = KEYS[2]
+local managerLease = KEYS[1]
+if redis.call('GET', managerLease) ~= ARGV[1] or
+   redis.call('PTTL', managerLease) <= 0 then
+  return -10 -- RESULT_STALE_CLEANUP_MANAGER
+end
+local state = KEYS[2]
+local retired = KEYS[3]
 local st, rt = redis.call('TYPE', state).ok, redis.call('TYPE', retired).ok
 if (st ~= 'none' and st ~= 'hash') or
    (rt ~= 'none' and rt ~= 'zset') then
@@ -766,7 +781,7 @@ if st == 'none' then
   return '0'
 end
 
-local cursor = ARGV[1]
+local cursor = ARGV[2]
 local result = redis.call('HSCAN', state, cursor, 'COUNT', 256)
 local now = redis.call('TIME')
 local nowMs = tonumber(now[1]) * 1000 + math.floor(tonumber(now[2]) / 1000)
@@ -798,14 +813,19 @@ return redis.call('ZRANGEBYSCORE', retired, '-inf', tostring(nowMs - retentionMs
 // Phase C is per-type. The caller confirms registry absence separately because
 // registry and lifecycle keys occupy different Redis Cluster slots.
 const char* const kCollectRetiredServerTombstoneScript = R"lua(
-local state = KEYS[1]
-local heartbeat = KEYS[2]
-local serverJobs = KEYS[3]
-local serverSummary = KEYS[4]
-local live = KEYS[5]
-local retired = KEYS[6]
-local serverId = ARGV[1]
-local retentionMs = tonumber(ARGV[2])
+local managerLease = KEYS[1]
+if redis.call('GET', managerLease) ~= ARGV[1] or
+   redis.call('PTTL', managerLease) <= 0 then
+  return -10 -- RESULT_STALE_CLEANUP_MANAGER
+end
+local state = KEYS[2]
+local heartbeat = KEYS[3]
+local serverJobs = KEYS[4]
+local serverSummary = KEYS[5]
+local live = KEYS[6]
+local retired = KEYS[7]
+local serverId = ARGV[2]
+local retentionMs = tonumber(ARGV[3])
 if not retentionMs or retentionMs < 0 then
   return redis.error_reply('invalid tombstone retention')
 end

@@ -151,13 +151,13 @@ A source-level review is not a substitute for Redis integration tests. Do not de
 
 ## Implementation status
 
-This directory currently contains the copied worker/job-status foundation, a worker-only heartbeat wrapper, and the initial per-type lease controller/scripts. The lease controller is not yet wired to a cleanup scanner. The existing cleanup Lua scripts have not yet all been amended to validate the manager token, and no automatic per-type discovery, independent renewal loop, scan gating, or failover orchestration is claimed complete. Until those pieces and tests are implemented, do not enable this scaffold as a production cleanup manager.
+This directory contains the copied worker/job-status foundation, a worker-only heartbeat wrapper, per-type lease acquisition/renewal/release, and a callable single-type cleanup pass. The expiration-fence, server-cleanup, tombstone-backfill, and tombstone-collection scripts now validate the type-local lease token and positive PTTL before their first write. The scanner renews at checkpoints and compare-releases on scan failure. It is not yet a complete background service: automatic per-type discovery/campaigning, a dedicated independent renewal/control loop, scheduled scan orchestration, application startup/shutdown wiring, and production integration tests remain outstanding. Do not enable this scaffold as a production cleanup manager until those pieces are completed and validated.
 
 ## Source layout
 
 - `WorkerHeartbeatPublisher.h/.cc`: worker-only heartbeat runner wrapper.
 - `CleanupManagerScripts.inc`: per-type lease acquire/renew/release and mutation-guard Lua primitives.
-- `CleanupManager.h/.cc`: initial per-type acquire/renew/release controller (no scanner integration yet).
+- `CleanupManager.h/.cc`: per-type lease controller and callable `scanType()` cleanup pass; no autonomous manager loop yet.
 - `RedisClient.h/.cc`, `RedisJobStatus.h/.cc`, `RedisJobScripts.inc`, and `HeartbeatRunner.h/.cc`: copied baseline worker/job-status implementation.
 - `browser/` and `util/`: copied dashboard and command-line utilities.
 

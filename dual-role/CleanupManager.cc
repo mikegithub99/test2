@@ -12,6 +12,7 @@
 #include <random>
 #include <stdexcept>
 #include <utility>
+#include <iterator>
 #include <vector>
 
 namespace
@@ -26,12 +27,52 @@ std::int64_t evalInt(
   return redis.template eval<std::int64_t>(
       script, keys.begin(), keys.end(), args.begin(), args.end());
 }
+std::string registryServersKey(const std::string& type)
+{
+  return "servers:{registry}:type:" + type;
+}
+std::string registryTypesKey()
+{
+  return "servers:{registry}:types";
+}
+std::string liveKey(const std::string& type)
+{
+  return "servers:live:{" + type + "}";
+}
+std::string stateKey(const std::string& type)
+{
+  return "servers:state:{" + type + "}";
+}
+std::string retiredKey(const std::string& type)
+{
+  return "servers:retired:{" + type + "}";
+}
+std::string heartbeatKey(const std::string& type, const std::string& id)
+{
+  return "heartbeat:server:{" + type + "}:" + id;
+}
+std::string serverJobsKey(const std::string& type, const std::string& id)
+{
+  return "jobs:server:{" + type + "}:" + id;
+}
+std::string typeJobsKey(const std::string& type)
+{
+  return "jobs:type:{" + type + "}";
+}
+std::string serverSummaryKey(const std::string& type, const std::string& id)
+{
+  return "summary:server:{" + type + "}:" + id;
+}
+std::string typeSummaryKey(const std::string& type)
+{
+  return "summary:type:{" + type + "}";
+}
 } // namespace
 
 CleanupManager::CleanupManager(Config config)
     : m_config(config)
 {
-  if (m_config.leaseTtlMilliseconds <= 0)
+  if (m_config.leaseTtlMilliseconds <= 0 ||\n      m_config.firstHeartbeatTimeoutMilliseconds <= 0 ||\n      m_config.tombstoneRetentionMilliseconds <= 0)
   {
     throw std::invalid_argument("CleanupManager lease TTL must be positive");
   }
@@ -73,10 +114,12 @@ bool CleanupManager::acquire(const std::string& type)
 {
   if (!m_client || type.empty()) return false;
 
+  bool hasLocalAuthority = false;
   {
     std::lock_guard<std::mutex> lock(m_mutex);
-    if (m_authorities.find(type) != m_authorities.end()) return true;
+    hasLocalAuthority = m_authorities.find(type) != m_authorities.end();
   }
+  if (hasLocalAuthority && renew(type)) return true;
 
   const std::vector<std::string> keys = {
       leaseKey(type), generationKey(type)};
@@ -160,6 +203,131 @@ std::string CleanupManager::tokenFor(const std::string& type) const
   std::lock_guard<std::mutex> lock(m_mutex);
   const auto it = m_authorities.find(type);
   return it == m_authorities.end() ? std::string{} : it->second.token;
+}
+
+
+// Performs a single type-local scan. Every mutating Lua operation includes
+// the lease key and token in the same {serverType} slot. Renewal is checked
+// at each scan checkpoint; an expired/ambiguous lease stops this pass.
+void CleanupManager::scanType(const std::string& type)
+{
+  if (!m_client || type.empty()) return;
+  if (!acquire(type)) return;
+
+  const auto token = tokenFor(type);
+  if (token.empty()) return;
+  const auto lease = leaseKey(type);
+
+  try
+  {
+    m_client->execute([&](auto& redis)
+    {
+    const auto renewCheckpoint = [&]()
+    {
+      const std::vector<std::string> keys = {lease};
+      const std::vector<std::string> args = {
+          token, std::to_string(m_config.leaseTtlMilliseconds)};
+      if (evalInt(redis, kRenewTypeCleanupManagerScript, keys, args) != 1)
+        throw std::runtime_error("per-type cleanup manager lease lost");
+    };
+
+    std::vector<std::string> ids;
+    redis.smembers(registryServersKey(type), std::back_inserter(ids));
+    for (const auto& id : ids)
+    {
+      renewCheckpoint();
+      const std::vector<std::string> fenceKeys = {
+          lease, heartbeatKey(type, id), stateKey(type),
+          serverJobsKey(type, id), serverSummaryKey(type, id),
+          liveKey(type), retiredKey(type)};
+      const std::vector<std::string> fenceArgs = {
+          token, id, std::to_string(m_config.firstHeartbeatTimeoutMilliseconds)};
+      const auto fenced = evalInt(
+          redis, kFenceExpiredServerScript, fenceKeys, fenceArgs);
+      if (fenced == -10)
+        throw std::runtime_error("stale manager rejected by expiration fence");
+      if (fenced == 0) continue;
+      if (fenced == 2)
+      {
+        // Cross-slot registry housekeeping is idempotent; worker IDs are
+        // globally unique and never reused across process incarnations.
+        redis.srem(registryServersKey(type), id);
+        continue;
+      }
+      if (fenced != 1) continue;
+
+      const auto serverJobs = serverJobsKey(type, id);
+      std::vector<std::string> refs;
+      redis.smembers(serverJobs, std::back_inserter(refs));
+      std::vector<std::string> keys = {
+          lease, liveKey(type), stateKey(type), heartbeatKey(type, id),
+          serverJobs, typeJobsKey(type), serverSummaryKey(type, id),
+          typeSummaryKey(type)};
+      for (const auto& ref : refs)
+        keys.push_back("job:{" + type + "}:" + ref);
+
+      std::vector<std::string> args = {
+          token, id, std::to_string(refs.size())};
+      for (const auto& ref : refs) args.push_back(ref);
+      args.push_back(type);
+
+      const auto cleaned = evalInt(
+          redis, kCleanupExpiredServerScript, keys, args);
+      if (cleaned == -10)
+        throw std::runtime_error("stale manager rejected by server cleanup");
+      if (cleaned == 1 || cleaned == 2)
+        redis.srem(registryServersKey(type), id);
+    }
+
+    // Backfill tombstones incrementally; this script is manager-fenced.
+    const std::vector<std::string> indexKeys = {
+        lease, stateKey(type), retiredKey(type)};
+    std::string cursor = "0";
+    do
+    {
+      renewCheckpoint();
+      const std::vector<std::string> args = {token, cursor};
+      cursor = redis.template eval<std::string>(
+          kIndexUntrackedTombstonesScript,
+          indexKeys.begin(), indexKeys.end(), args.begin(), args.end());
+      if (cursor == "-10")
+        throw std::runtime_error("stale manager rejected by tombstone backfill");
+    } while (cursor != "0");
+
+    renewCheckpoint();
+    const std::vector<std::string> retiredIndexKeys = {retiredKey(type)};
+    const std::vector<std::string> retentionArgs = {
+        std::to_string(m_config.tombstoneRetentionMilliseconds)};
+    const auto expiredIds = redis.template eval<std::vector<std::string>>(
+        kListExpiredServerTombstonesScript,
+        retiredIndexKeys.begin(), retiredIndexKeys.end(),
+        retentionArgs.begin(), retentionArgs.end());
+
+    for (const auto& id : expiredIds)
+    {
+      renewCheckpoint();
+      // Registry and type data are in different Cluster slots. This read is
+      // intentionally outside Lua; final deletion is revalidated in type slot.
+      if (redis.sismember(registryServersKey(type), id)) continue;
+
+      const std::vector<std::string> collectKeys = {
+          lease, stateKey(type), heartbeatKey(type, id),
+          serverJobsKey(type, id), serverSummaryKey(type, id),
+          liveKey(type), retiredKey(type)};
+      const std::vector<std::string> collectArgs = {
+          token, id, std::to_string(m_config.tombstoneRetentionMilliseconds)};
+      const auto collected = evalInt(
+          redis, kCollectRetiredServerTombstoneScript, collectKeys, collectArgs);
+      if (collected == -10)
+        throw std::runtime_error("stale manager rejected by tombstone collection");
+    }
+    });
+  }
+  catch (...)
+  {
+    try { release(type); } catch (...) {}
+    throw;
+  }
 }
 
 std::int64_t CleanupManager::generationFor(const std::string& type) const
