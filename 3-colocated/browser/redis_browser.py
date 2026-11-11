@@ -172,7 +172,7 @@ class RedisBrowser(App):
         # columns can horizontally scroll the hierarchy label out of view on
         # narrower terminals.
         table.add_column(
-            f"{'Hierarchy':<62}{'Pending':>7} {'Active':>7} {'Suspended':>10} {'Total':>6}",
+            f"{'Hierarchy':<62}{'Pending':>7} {'Active':>7} {'Suspended':>10} {'Total':>6} {'Server state':>13} {'Heartbeat TTL':>14}",
             key="display",
         )
         self._timer = self.set_interval(self.interval, self.refresh_view)
@@ -201,7 +201,7 @@ class RedisBrowser(App):
             server_ids = sorted(self.client.smembers(server_set_key))
             rows.append((
                 type_key, server_type, *type_counters, 0, None,
-                bool(server_ids), type_metadata,
+                bool(server_ids), type_metadata, "", "",
             ))
 
             for server_id in server_ids:
@@ -209,11 +209,22 @@ class RedisBrowser(App):
                 server_hash = self.client.hgetall(server_key)
                 server_counters = counter_values(server_hash)
                 server_metadata = format_metadata({k[5:]: v for k, v in server_hash.items() if k.startswith("meta:")})
+                state_key = f"servers:state:{{{server_type}}}"
+                lifecycle_state = self.client.hget(state_key, server_id) or "UNKNOWN"
+                heartbeat_key = f"heartbeat:server:{{{server_type}}}:{server_id}"
+                heartbeat_ttl = self.client.ttl(heartbeat_key)
+                if heartbeat_ttl == -2:
+                    heartbeat_display = "EXPIRED"
+                elif heartbeat_ttl == -1:
+                    heartbeat_display = "NO EXPIRY"
+                else:
+                    heartbeat_display = f"{heartbeat_ttl}s"
                 jobs_set_key = f"jobs:server:{{{server_type}}}:{server_id}"
                 references = sorted(self.client.smembers(jobs_set_key))
                 rows.append((
                     server_key, f"SERVER: {server_id}", *server_counters,
                     1, type_key, bool(references), server_metadata,
+                    lifecycle_state, heartbeat_display,
                 ))
 
                 for reference in references:
@@ -228,7 +239,7 @@ class RedisBrowser(App):
                         "1" if status == "PENDING" else "0",
                         "1" if status == "ACTIVE" else "0",
                         "1" if status == "SUSPENDED" else "0",
-                        "1", 2, server_key, False, dict(job),
+                        "1", 2, server_key, False, dict(job), "", "",
                     ))
         return rows
 
@@ -281,9 +292,12 @@ class RedisBrowser(App):
                 # counters therefore start at the same screen column at
                 # every hierarchy depth.
                 item_label = f"{'  ' * level}{marker} {label}"
+                server_state = row[10] if len(row) > 10 else ""
+                heartbeat_ttl = row[11] if len(row) > 11 else ""
                 display = (
                     f"{item_label:<62.62}"
                     f"{pending:>7} {active:>7} {suspended:>10} {total:>6}"
+                    f" {server_state:>13} {heartbeat_ttl:>14}"
                 )
                 table.add_row(Text(display), key=key)
 
