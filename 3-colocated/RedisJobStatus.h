@@ -140,14 +140,24 @@ public:
       const std::string& serverType);
 
   /**
-   * @brief Reads current jobs for an instance.
+   * @brief Best-effort read of jobs for one server instance.
    *
-   * This returns the complete current set; callers should add bounded
-   * pagination if an instance can own a large number of jobs.
+   * References are enumerated before the Lua snapshot. Jobs removed before
+   * the snapshot are skipped; jobs added after enumeration are not included.
+   * Existing records are checked for serverType/serverId ownership.
    */
   std::vector<Job> getServerJobs(
       const std::string& serverType,
       const std::string& serverId);
+
+  /**
+   * @brief Best-effort read of jobs for all servers of one server type.
+   *
+   * Uses the type-wide job index. Jobs removed before the Lua snapshot are
+   * skipped; jobs added after enumeration are not included. Existing records
+   * are checked for serverType ownership.
+   */
+  std::vector<Job> getTypeJobs(const std::string& serverType);
 
 private:
   /** @brief Constructs the singleton using the first call's configuration provider. */
