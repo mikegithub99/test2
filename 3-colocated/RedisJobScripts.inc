@@ -657,40 +657,47 @@ return 1
 )lua";
 
 
-// Consistent dashboard read snapshots. All declared keys share {serverType}.
+// Best-effort dashboard job snapshots. All declared keys share {serverType}.
 //
-// Job snapshot: KEYS[1] is the server index; KEYS[2..] are job hashes.
-// ARGV[1] is the number of references; ARGV[2..] are references.
-const char* const kReadServerJobsSnapshotScript = R"lua(
+// KEYS[1] is the server- or type-wide job index; KEYS[2..] are job hashes
+// corresponding to the references C++ enumerated before invoking this script.
+// ARGV[1] is the number of references; ARGV[2..] are those references.
+//
+// Index changes are normal under concurrent job creation/completion. A
+// reference no longer in the index, or whose hash has already disappeared, is
+// omitted. Newly added references are naturally outside this candidate list.
+// Existing keys are all explicitly declared in KEYS for Redis Cluster.
+const char* const kReadJobsSnapshotScript = R"lua(
 local index = KEYS[1]
 local count = tonumber(ARGV[1])
 if not count or count < 0 or count ~= math.floor(count) or
    #KEYS ~= count + 1 or #ARGV ~= count + 1 then
   return redis.error_reply('invalid job snapshot arguments')
 end
-local t = redis.call('TYPE', index).ok
-if t ~= 'none' and t ~= 'set' then
-  return redis.error_reply('wrong server job index type')
+local indexType = redis.call('TYPE', index).ok
+if indexType ~= 'none' and indexType ~= 'set' then
+  return redis.error_reply('wrong job index type')
 end
-local refs = redis.call('SMEMBERS', index)
-if #refs ~= count then
-  return redis.error_reply('server job index changed; retry snapshot')
-end
-local out = {tostring(count)}
+
+local out = {'0'}
+local returned = 0
 for i = 1, count do
   local ref = ARGV[i + 1]
-  if redis.call('SISMEMBER', index, ref) ~= 1 then
-    return redis.error_reply('server job index changed; retry snapshot')
+  if redis.call('SISMEMBER', index, ref) == 1 then
+    local jobKey = KEYS[i + 1]
+    local jobType = redis.call('TYPE', jobKey).ok
+    if jobType == 'hash' then
+      local fields = redis.call('HGETALL', jobKey)
+      returned = returned + 1
+      table.insert(out, ref)
+      table.insert(out, tostring(#fields / 2))
+      for _, value in ipairs(fields) do table.insert(out, value) end
+    elseif jobType ~= 'none' then
+      return redis.error_reply('wrong job hash type for indexed reference')
+    end
   end
-  local jobKey = KEYS[i + 1]
-  if redis.call('TYPE', jobKey).ok ~= 'hash' then
-    return redis.error_reply('missing or wrong-type job hash in server index')
-  end
-  local fields = redis.call('HGETALL', jobKey)
-  table.insert(out, ref)
-  table.insert(out, tostring(#fields / 2))
-  for _, value in ipairs(fields) do table.insert(out, value) end
 end
+out[1] = tostring(returned)
 return out
 )lua";
 
