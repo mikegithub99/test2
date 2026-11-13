@@ -655,6 +655,74 @@ RedisJobStatus::getServerSummaries(const string& serverType)
   });
 }
 
+namespace
+{
+vector<RedisJobStatus::Job> parseJobsSnapshot(
+    const vector<string>& flat,
+    const string& expectedServerType,
+    const string* expectedServerId)
+{
+  if (flat.empty())
+  {
+    throw runtime_error("RedisJobStatus: empty job snapshot");
+  }
+  std::size_t cursor = 0;
+  const auto count = static_cast<std::size_t>(stoull(flat[cursor++]));
+  vector<RedisJobStatus::Job> jobs;
+  jobs.reserve(count);
+  for (std::size_t i = 0; i < count; ++i)
+  {
+    if (cursor + 2 > flat.size())
+    {
+      throw runtime_error("RedisJobStatus: malformed job record");
+    }
+    const string reference = flat[cursor++];
+    const auto fields = static_cast<std::size_t>(stoull(flat[cursor++]));
+    if (flat.size() < cursor + fields * 2)
+    {
+      throw runtime_error("RedisJobStatus: truncated job record");
+    }
+    RedisJobStatus::Job job;
+    for (std::size_t j = 0; j < fields; ++j)
+    {
+      const auto& name = flat[cursor++];
+      const auto& value = flat[cursor++];
+      if (name == kJobIdField)
+      {
+        job.jobId = value;
+      }
+      else if (name == kStatusField)
+      {
+        job.status = value;
+      }
+      else if (name == kServerTypeField)
+      {
+        job.serverType = value;
+      }
+      else if (name == kServerIdField)
+      {
+        job.serverId = value;
+      }
+      else
+      {
+        job.fields[name] = value;
+      }
+    }
+    if (job.serverType != expectedServerType ||
+        (expectedServerId && job.serverId != *expectedServerId))
+    {
+      throw runtime_error("RedisJobStatus: foreign job reference in index: " + reference);
+    }
+    jobs.push_back(std::move(job));
+  }
+  if (cursor != flat.size())
+  {
+    throw runtime_error("RedisJobStatus: trailing job snapshot data");
+  }
+  return jobs;
+}
+} // namespace
+
 vector<RedisJobStatus::Job> RedisJobStatus::getServerJobs(
     const string& serverType, const string& serverId)
 {
@@ -674,64 +742,31 @@ vector<RedisJobStatus::Job> RedisJobStatus::getServerJobs(
       keys.push_back("job:{" + serverType + "}:" + ref);
     ArgList args = {to_string(refs.size())};
     args.insert(args.end(), refs.begin(), refs.end());
-    const auto flat = evalStrings(redis, kReadServerJobsSnapshotScript, keys, args);
-    if (flat.empty())
-    {
-      throw runtime_error("RedisJobStatus: empty job snapshot");
-    }
-    std::size_t cursor = 0;
-    const auto count = static_cast<std::size_t>(stoull(flat[cursor++]));
-    vector<Job> jobs;
-    jobs.reserve(count);
-    for (std::size_t i = 0; i < count; ++i)
-    {
-      if (cursor + 2 > flat.size())
-      {
-        throw runtime_error("RedisJobStatus: malformed job record");
-      }
-      const string reference = flat[cursor++];
-      const auto fields = static_cast<std::size_t>(stoull(flat[cursor++]));
-      if (flat.size() < cursor + fields * 2)
-      {
-        throw runtime_error("RedisJobStatus: truncated job record");
-      }
-      Job job;
-      for (std::size_t j = 0; j < fields; ++j)
-      {
-        const auto& name = flat[cursor++];
-        const auto& value = flat[cursor++];
-        if (name == kJobIdField)
-        {
-          job.jobId = value;
-        }
-        else if (name == kStatusField)
-        {
-          job.status = value;
-        }
-        else if (name == kServerTypeField)
-        {
-          job.serverType = value;
-        }
-        else if (name == kServerIdField)
-        {
-          job.serverId = value;
-        }
-        else
-        {
-          job.fields[name] = value;
-        }
-      }
-      if (job.serverType != serverType || job.serverId != serverId)
-      {
-        throw runtime_error("RedisJobStatus: foreign job reference in index: " + reference);
-      }
-      jobs.push_back(std::move(job));
-    }
-    if (cursor != flat.size())
-    {
-      throw runtime_error("RedisJobStatus: trailing job snapshot data");
-    }
-    return jobs;
+    const auto flat = evalStrings(redis, kReadJobsSnapshotScript, keys, args);
+    return parseJobsSnapshot(flat, serverType, &serverId);
+  });
+}
+
+vector<RedisJobStatus::Job> RedisJobStatus::getTypeJobs(
+    const string& serverType)
+{
+  if (!m_enabled)
+  {
+    return {};
+  }
+  validateIdentifier(serverType, "serverType", true);
+  const string indexKey = typeJobsKey(serverType);
+  return m_client->execute([&](auto& redis)
+  {
+    vector<string> refs;
+    redis.smembers(indexKey, back_inserter(refs));
+    KeyList keys = {indexKey};
+    for (const auto& ref : refs)
+      keys.push_back("job:{" + serverType + "}:" + ref);
+    ArgList args = {to_string(refs.size())};
+    args.insert(args.end(), refs.begin(), refs.end());
+    const auto flat = evalStrings(redis, kReadJobsSnapshotScript, keys, args);
+    return parseJobsSnapshot(flat, serverType, nullptr);
   });
 }
 
