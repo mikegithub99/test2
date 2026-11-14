@@ -124,7 +124,7 @@ A source-level review cannot establish those properties.
 
 ### P1 — Unbounded per-server cleanup and job reads can block a Redis slot
 
-**Location:** RedisHeartbeatManager::scanOnce; kCleanupExpiredServerScript; getServerJobs(); getTypeJobs(); kReadJobsSnapshotScript.
+**Location:** RedisHeartbeatManager::scanOnce; kCleanupExpiredServerScript; getServerJobs(); getServerTypeJobs(); kReadJobsSnapshotScript.
 
 Cleanup reads every server job reference, sends every corresponding job key to one Lua invocation, and processes all jobs in one script. Job retrieval similarly enumerates the entire index, sends every job key to Lua, and returns every job hash. These operations have no explicit item, byte, or execution-time limit.
 
