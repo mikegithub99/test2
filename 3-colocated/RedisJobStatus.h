@@ -132,7 +132,7 @@ public:
   std::vector<std::string> getServerTypes();
 
   /** @brief Returns the materialized summary for one server type. */
-  std::map<std::string, std::int64_t> getTypeSummary(
+  std::map<std::string, std::int64_t> getServerTypeSummary(
       const std::string& serverType);
 
   /** @brief Returns registered instances and their summary counters. */
@@ -157,7 +157,7 @@ public:
    * skipped; jobs added after enumeration are not included. Existing records
    * are checked for serverType ownership.
    */
-  std::vector<Job> getTypeJobs(const std::string& serverType);
+  std::vector<Job> getServerTypeJobs(const std::string& serverType);
 
 private:
   /** @brief Constructs the singleton using the first call's configuration provider. */
