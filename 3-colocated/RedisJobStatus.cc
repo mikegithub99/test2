@@ -593,7 +593,7 @@ void RedisJobStatus::refreshHeartbeat(int64_t ttlSeconds)
   }
 }
 
-map<string, int64_t> RedisJobStatus::getTypeSummary(
+map<string, int64_t> RedisJobStatus::getServerTypeSummary(
     const string& serverType)
 {
   if (!m_enabled)
@@ -747,7 +747,7 @@ vector<RedisJobStatus::Job> RedisJobStatus::getServerJobs(
   });
 }
 
-vector<RedisJobStatus::Job> RedisJobStatus::getTypeJobs(
+vector<RedisJobStatus::Job> RedisJobStatus::getServerTypeJobs(
     const string& serverType)
 {
   if (!m_enabled)
