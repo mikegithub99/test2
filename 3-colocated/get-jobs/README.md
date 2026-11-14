@@ -9,11 +9,11 @@ std::vector<Job> getServerJobs(
     const std::string& serverType,
     const std::string& serverId);
 
-std::vector<Job> getTypeJobs(const std::string& serverType);
+std::vector<Job> getServerTypeJobs(const std::string& serverType);
 ```
 
 - `getServerJobs()` reads jobs indexed by `jobs:server:{<serverType>}:<serverId>`.
-- `getTypeJobs()` reads jobs indexed by `jobs:type:{<serverType>}`.
+- `getServerTypeJobs()` reads jobs indexed by `jobs:type:{<serverType>}`.
 
 Both return job hash contents as `RedisJobStatus::Job` objects, not just references. The references are internal lookup identifiers used to construct the job hash keys.
 
@@ -51,7 +51,7 @@ The result is deliberately **best effort**, not a complete point-in-time view of
 C++ validates the returned hash fields:
 
 - `getServerJobs()` requires both `serverType` and `serverId` to match the requested owner.
-- `getTypeJobs()` requires `serverType` to match. It intentionally accepts jobs from any `serverId` of that type.
+- `getServerTypeJobs()` requires `serverType` to match. It intentionally accepts jobs from any `serverId` of that type.
 
 A missing or mismatched ownership field is treated as inconsistent data, not normal churn. Wrong Redis key types are also errors rather than silently ignored.
 
@@ -70,7 +70,7 @@ The index and every job hash key are explicitly supplied to Lua through `KEYS`. 
 
 ## Files changed
 
-- `../RedisJobStatus.h`: documents best-effort semantics and declares `getTypeJobs()`.
+- `../RedisJobStatus.h`: documents best-effort semantics and declares `getServerTypeJobs()`.
 - `../RedisJobStatus.cc`: shares snapshot parsing and implements both APIs using the common Lua script.
 - `../RedisJobScripts.inc`: replaces strict cardinality/membership validation with stale-candidate filtering.
 
