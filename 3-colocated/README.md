@@ -87,7 +87,7 @@ status->transitionJob("job-100", RedisJobStatus::State::Active);
 status->completeJob("job-100");
 
 auto types = status->getServerTypes();
-auto typeCounters = status->getTypeSummary("query");
+auto typeCounters = status->getServerTypeSummary("query");
 auto servers = status->getServerSummaries("query");
 auto jobs = status->getServerJobs("query", "query-01");
 ```
