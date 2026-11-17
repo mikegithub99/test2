@@ -495,9 +495,9 @@ void RedisJobStatus::registerServer(
     throw runtime_error("RedisJobStatus: unexpected server registration result");
   }
 
-  // Initialize type metadata independently: the registry keys use the
-  // {registry} hash tag, while this summary key uses {serverType}. Keeping
-  // these as separate operations is required for Redis Cluster compatibility.
+  // The registry keys use {registry}, while all per-type registration keys
+  // use {serverType}. Keep registry insertion separate, but commit type metadata,
+  // server metadata, registeredAt, and ACTIVE in one per-type-slot Lua execution.
   const auto now = std::time(nullptr);
   const std::tm* utc = std::gmtime(&now);
   if (!utc)
@@ -506,38 +506,20 @@ void RedisJobStatus::registerServer(
   }
   std::ostringstream timestamp;
   timestamp << std::put_time(utc, "%Y-%m-%dT%H:%M:%SZ");
-  const KeyList summaryKeys = {typeSummaryKey(m_serverType)};
-  ArgList summaryArgs = {timestamp.str(), m_serverId};
-  appendMetadataArgs(summaryArgs, serverTypeMetadata,
-                     [](const string&) { return true; });
-  m_client->execute(
-      [&](auto& redis)
-      {
-        return evalResult(
-            redis, kInitializeTypeSummaryMetadataScript, summaryKeys, summaryArgs);
-      });
 
-  const KeyList serverKeys = {serverSummaryKey(m_serverType, m_serverId)};
-  ArgList serverArgs;
-  appendMetadataArgs(serverArgs, serverMetadata,
+  const KeyList registrationKeys = {
+      typeSummaryKey(m_serverType),
+      serverSummaryKey(m_serverType, m_serverId),
+      serverStateKey(m_serverType)};
+  ArgList registrationArgs = {m_serverId, timestamp.str()};
+  appendMetadataArgs(registrationArgs, serverTypeMetadata,
                      [](const string&) { return true; });
-  m_client->execute(
-      [&](auto& redis)
-      {
-        return evalResult(
-            redis, kSetServerSummaryMetadataScript, serverKeys, serverArgs);
-      });
-
-  // Publish ACTIVE only after registry membership and type metadata are
-  // initialized. Activation creates the per-server summary timestamp and ACTIVE
-  // state atomically. An ID becomes eligible for reuse only after Phase C removes
-  // its prior per-type state tombstone.
-  const KeyList stateKeys = {
-      serverStateKey(m_serverType), serverSummaryKey(m_serverType, m_serverId)};
-  const ArgList stateArgs = {m_serverId};
+  appendMetadataArgs(registrationArgs, serverMetadata,
+                     [](const string&) { return true; });
   const auto activation = m_client->execute([&](auto& redis)
   {
-    return evalResult(redis, kActivateServerScript, stateKeys, stateArgs);
+    return evalResult(
+        redis, kRegisterAndActivateServerScript, registrationKeys, registrationArgs);
   });
   if (activation != 1)
   {
