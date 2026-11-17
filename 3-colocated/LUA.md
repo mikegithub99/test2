@@ -44,4 +44,8 @@ The job lifecycle and cleanup operations are not just fixed command sequences. T
 
 Lua keeps that decision-making and the resulting writes together in Redis. In this Redis Cluster design, all keys touched by a given script must also be in the same hash slot; the per-server-type keys use the `{serverType}` hash tag for that reason.
 
+## Registration atomicity in Redis Cluster
+
+The registry membership update uses the `{registry}` hash slot, while type summary, server summary, and server state use the `{serverType}` slot. Those operations cannot be combined into one Redis Cluster Lua execution. After registry insertion, `kRegisterAndActivateServerScript` performs all per-type registration writes in one script: it validates the three key types and metadata argument layout before writing, initializes type metadata with `HSETNX`, merges server metadata with `HSET`, creates `meta:registeredAt` from Redis `TIME`, and sets the server state to `ACTIVE`. This avoids partial per-type registration metadata if the process stops between separate script calls. It does not make the preceding registry-slot update atomic with the per-type operation.
+
 **In short:** use `MULTI/EXEC` for a known sequence of commands; use Lua when Redis must inspect data, make decisions based on it, and apply conditional multi-key changes atomically.
