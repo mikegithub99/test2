@@ -23,7 +23,14 @@
  * key types and state before writing, and keep scripts short.
  */
 
-// Shared counter preflight functions prepended to each counter-mutating script.
+// -----------------------------------------------------------------------------
+// Shared Lua helper preludes
+//
+// These functions are prepended to individual scripts before Redis EVAL.
+// Keep helpers here when they are shared by multiple scripts.
+// -----------------------------------------------------------------------------
+
+// Counter preflight functions prepended to each counter-mutating script.
 const char* const kCounterValidationPrelude = R"lua(
 local function counterValid(key, field, delta, requirePositive)
   local raw = redis.call('HGET', key, field) or '0'
