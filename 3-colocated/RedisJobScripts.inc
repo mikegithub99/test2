@@ -1,21 +1,3 @@
-// Shared counter preflight functions prepended to each counter-mutating script.
-const char* const kCounterValidationPrelude = R"lua(
-local function counterValid(key, field, delta, requirePositive)
-  local raw = redis.call('HGET', key, field) or '0'
-  if not string.match(raw, '^%d+$') then return false end
-  local digits = string.gsub(raw, '^0+', '')
-  if digits == '' then digits = '0' end
-  local maxValue = '9223372036854775807'
-  if #digits > #maxValue or
-     (#digits == #maxValue and digits > maxValue) then
-    return false
-  end
-  if requirePositive and digits == '0' then return false end
-  if delta == 1 and digits == maxValue then return false end
-  return true
-end
-)lua";
-
 /**
  * @file RedisJobScripts.inc
  * @brief Embedded Lua scripts for RedisJobStatus.
@@ -40,6 +22,26 @@ end
  * scripts do not provide general rollback after a runtime error. Validate
  * key types and state before writing, and keep scripts short.
  */
+
+// Shared counter preflight functions prepended to each counter-mutating script.
+const char* const kCounterValidationPrelude = R"lua(
+local function counterValid(key, field, delta, requirePositive)
+  local raw = redis.call('HGET', key, field) or '0'
+  if not string.match(raw, '^%d+$') then return false end
+  local digits = string.gsub(raw, '^0+', '')
+  if digits == '' then digits = '0' end
+  local maxValue = '9223372036854775807'
+  if #digits > #maxValue or
+     (#digits == #maxValue and digits > maxValue) then
+    return false
+  end
+  if requirePositive and digits == '0' then return false end
+  if delta == 1 and digits == maxValue then return false end
+  return true
+end
+)lua";
+
+
 
 /**
  * @brief Creates a PENDING job and updates its indexes and summary counters.
