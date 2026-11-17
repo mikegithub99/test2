@@ -1,101 +1,76 @@
 # redis-cli hierarchy scripts
 
-This folder contains a read-only command-line view of the **3-colocated**
-RedisJobStatus key layout.
+Read-only command-line viewers for the **3-colocated** RedisJobStatus key
+layout. Both scripts use Bash and `redis-cli`; neither requires Python or
+redis-py.
 
-## Files
+## Run from the Linux host
 
-- `show-job-status.sh` — displays server types, their registered server IDs,
-  lifecycle counters, server state, heartbeat TTL, and each server's indexed
-  jobs. It uses only `redis-cli` commands and does not require Python,
-  redis-py, or Textual.
-
-## Requirements
-
-- Bash 4 or newer
-- `redis-cli`
-- For container-only Redis CLI usage, `podman` on the host and the name of
-  the running Redis container
-
-## Run with redis-cli installed on the host
-
-Make the script executable, then run it:
+Use the regular script with a host-installed Redis CLI:
 
 ```bash
 chmod +x show-job-status.sh
 REDIS_HOST=127.0.0.1 REDIS_PORT=6379 ./show-job-status.sh
 ```
 
-## Run when redis-cli exists only inside the Redis Podman container
+## Run from inside the Redis Podman container
 
-Run the script on the Linux host. Set `REDIS_CONTAINER` to the container name
-(or ID); the script invokes `podman exec` to run `redis-cli` inside it:
-
-```bash
-chmod +x show-job-status.sh
-REDIS_CONTAINER=my-redis ./show-job-status.sh
-```
-
-Replace `my-redis` with the name shown by:
+Use `show-job-status-in-container.sh`. Copy or mount this folder into the
+container, then execute it from a shell inside that container:
 
 ```bash
-podman ps
+podman cp 3-colocated/redis-cli-scripts my-redis:/tmp/redis-cli-scripts
+podman exec -it my-redis sh
 ```
 
-The Redis CLI inside the container connects to its local Redis server. If your
-container uses a non-default Redis port, add `REDIS_PORT` only when using a
-host-installed CLI; for a container-internal CLI, configure the Redis server
-and container networking accordingly.
-
-## Authentication and database selection
-
-Optional environment variables:
-
-| Variable | Default | Purpose |
-|---|---:|---|
-| `REDIS_HOST` | `127.0.0.1` | Host for host-installed redis-cli |
-| `REDIS_PORT` | `6379` | Port for host-installed redis-cli |
-| `REDIS_DB` | `0` | Redis database number |
-| `REDIS_CONTAINER` | empty | Podman container name/ID; use container's redis-cli |
-| `REDIS_USERNAME` | empty | ACL username |
-| `REDIS_PASSWORD` | empty | Password; passed through `REDISCLI_AUTH` |
-
-Examples:
+Inside the container:
 
 ```bash
-REDIS_CONTAINER=my-redis REDIS_USERNAME=default REDIS_PASSWORD='secret' ./show-job-status.sh
-REDIS_HOST=10.0.0.20 REDIS_PORT=6380 REDIS_DB=2 ./show-job-status.sh
+cd /tmp/redis-cli-scripts
+chmod +x show-job-status-in-container.sh
+./show-job-status-in-container.sh
 ```
 
-Avoid putting passwords directly into shell history. Prefer exporting
-`REDIS_PASSWORD` from a protected environment or secret manager.
+Replace `my-redis` with the container name or ID from `podman ps`.
+The script invokes the container's local `redis-cli` directly, connecting to
+`127.0.0.1:6379` by default. You can override the connection:
 
-## Example output
-
-```text
-Redis Job Status (3-colocated)
-Connection: Podman container my-redis
-
-SERVER TYPE / SERVER ID / JOB                                PENDING   ACTIVE  SUSPENDED    TOTAL  STATE / HEARTBEAT
---------------------------------------------------------------------------------------------------------------------------------
-orders                                                           12        5          2       19
-  server-101                                                      3        2          1        6  ACTIVE / 18s
-    JOB: job-001 [ACTIVE]
-    JOB: job-002 [PENDING]
-  server-102                                                      9        3          1       13  ACTIVE / 21s
-
-Read-only view; no Redis keys are modified.
+```bash
+REDIS_HOST=127.0.0.1 REDIS_PORT=6379 REDIS_DB=0 ./show-job-status-in-container.sh
 ```
 
-## Notes and limitations
+If authentication is enabled, set `REDISCLI_AUTH` in the container environment
+and optionally `REDIS_USERNAME` for ACL authentication:
 
-- This reads the existing `servers:{registry}:types`,
-  `servers:{registry}:type:<type>`, type/server summary hashes, server state,
-  heartbeat keys, per-server job indexes, and job hashes used by
-  `3-colocated`.
-- The view is a point-in-time-ish sequence of ordinary read commands, not an
-  atomic snapshot. Counters and indexes can change while it is printing.
-- It displays jobs through each server's `jobs:server:{<type>}:<serverId>`
-  index. It does not display a separate type-wide jobs listing or provide the
-  browser's interactive expand/collapse and `j` view toggle.
-- The script is read-only. It does not delete jobs, servers, or keys.
+```bash
+REDISCLI_AUTH='your-password' REDIS_USERNAME=default ./show-job-status-in-container.sh
+```
+
+Avoid putting passwords directly in shell history.
+
+## Output
+
+The viewer prints server type aggregate counters, each server ID and its
+counters/state/heartbeat TTL, then the jobs found in that server's job index.
+It reads:
+
+- `servers:{registry}:types`
+- `servers:{registry}:type:<serverType>`
+- `summary:type:{<serverType>}`
+- `summary:server:{<serverType>}:<serverId>`
+- `servers:state:{<serverType>}`
+- `heartbeat:server:{<serverType>}:<serverId>`
+- `jobs:server:{<serverType>}:<serverId>`
+- `job:{<serverType>}:<jobReference>`
+
+If the registry set is empty, the in-container script checks for
+`summary:type:*` keys and prints diagnostic guidance. This helps distinguish
+an empty/wrong Redis database from a missing registry index.
+
+## Notes
+
+- Both scripts are read-only; they do not modify or delete Redis keys.
+- Reads are separate Redis commands, not an atomic point-in-time snapshot.
+- Jobs are listed through each server's per-server job index. This is a
+  static listing, not the interactive browser; it does not implement the
+  browser's expand/collapse or `j` type-wide-jobs toggle.
