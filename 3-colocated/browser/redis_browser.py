@@ -118,6 +118,7 @@ class RedisBrowser(App):
         ("h", "toggle_help", "Help"),
         ("d", "delete_selected", "Delete"),
         ("i", "show_info", "Info"),
+        ("j", "toggle_type_jobs", "Type Jobs"),
         ("space", "toggle_expand", "Expand / Collapse"),
         ("escape", "collapse", "Collapse"),
         ("q", "quit", "Quit"),
@@ -148,6 +149,8 @@ class RedisBrowser(App):
         self.last_rows = []
         self.expanded_types: set[str] = set()
         self.expanded_servers: set[str] = set()
+        # Presentation state; normal hierarchy expansion is preserved.
+        self.type_jobs_views: set[str] = set()
         self.table: DataTable | None = None
         self.status: Static | None = None
 
@@ -160,7 +163,7 @@ class RedisBrowser(App):
         yield DataTable(id="table", cursor_type="row", zebra_stripes=True)
         yield Static("Starting…", id="status")
         yield Static(
-            "Click/Enter Select   Space Expand   I Info   Esc Collapse   D Delete   1 Refresh   2 Pause   3 Slower   4 Faster   Q Quit",
+            "Click/Enter Select   Space Expand   J Type Jobs Toggle   I Info   Esc Back   D Delete   1 Refresh   2 Pause   3 Slower   4 Faster   Q Quit",
             id="controls",
         )
 
@@ -203,6 +206,27 @@ class RedisBrowser(App):
                 type_key, server_type, *type_counters, 0, None,
                 bool(server_ids), type_metadata, "", "",
             ))
+
+            if type_key in self.type_jobs_views:
+                # Use the existing type-wide index; avoid walking each server.
+                type_references = sorted(
+                    self.client.smembers(f"jobs:type:{{{server_type}}}")
+                )
+                for reference in type_references:
+                    job_key = f"job:{{{server_type}}}:{reference}"
+                    job = self.client.hgetall(job_key)
+                    if not job:
+                        continue
+                    job_id = job.get("jobId", reference)
+                    status = job.get("status", "UNKNOWN").upper()
+                    rows.append((
+                        job_key, f"JOB: {job_id} [{status}]",
+                        "1" if status == "PENDING" else "0",
+                        "1" if status == "ACTIVE" else "0",
+                        "1" if status == "SUSPENDED" else "0",
+                        "1", 2, type_key, False, dict(job), "", "",
+                    ))
+                continue
 
             for server_id in server_ids:
                 server_key = f"summary:server:{{{server_type}}}:{server_id}"
@@ -253,6 +277,8 @@ class RedisBrowser(App):
                 visible.append(row)
             elif level == 1 and parent in self.expanded_types:
                 visible.append(row)
+            elif level == 2 and parent in self.type_jobs_views:
+                visible.append(row)
             elif level == 2 and parent in self.expanded_servers:
                 parent_server = by_key.get(parent)
                 if parent_server and parent_server[7] in self.expanded_types:
@@ -285,9 +311,12 @@ class RedisBrowser(App):
                     (level == 0 and key in self.expanded_types)
                     or (level == 1 and key in self.expanded_servers)
                 )
-                marker = "[-]" if has_children and is_expanded else (
-                    "[+]" if has_children else "   "
-                )
+                if level == 0 and key in self.type_jobs_views and has_children:
+                    marker = "[+]"
+                else:
+                    marker = "[-]" if has_children and is_expanded else (
+                        "[+]" if has_children else "   "
+                    )
                 # Indentation belongs inside a fixed-width label field;
                 # counters therefore start at the same screen column at
                 # every hierarchy depth.
@@ -353,9 +382,19 @@ class RedisBrowser(App):
         row = self.last_rows[row_index]
         key, _label, _p, _a, _s, _t, level, parent, _has_children = row[:9]
 
+        if level == 2 and parent in self.type_jobs_views:
+            # Escape from type-wide jobs restores the type's hierarchy.
+            self.type_jobs_views.discard(parent)
+            type_index = next(
+                (i for i, item in enumerate(self.last_rows) if item[0] == parent),
+                None,
+            )
+            if type_index is not None:
+                table.move_cursor(row=type_index, column=0, animate=False)
+            await self.refresh_view()
+            return
         if level == 2:
-            # A job row collapses its containing server, avoiding the need to
-            # navigate back through a long list of jobs.
+            # A server-specific job row collapses its containing server.
             collapse_key = parent
             collapse_level = 1
         elif level == 1:
@@ -363,6 +402,10 @@ class RedisBrowser(App):
             collapse_key = parent
             collapse_level = 0
         else:
+            if key in self.type_jobs_views:
+                self.type_jobs_views.discard(key)
+                await self.refresh_view()
+                return
             collapse_key = key
             collapse_level = 0
 
@@ -653,6 +696,21 @@ return 1
         )
         self.client.delete(registry_set)
         self.client.srem("servers:{registry}:types", server_type)
+
+    async def action_toggle_type_jobs(self) -> None:
+        """Toggle the selected server type between hierarchy and all its jobs."""
+        table = self.table
+        if table is None or not 0 <= table.cursor_row < len(self.last_rows):
+            return
+        row = self.last_rows[table.cursor_row]
+        if row[6] != 0:
+            return
+        type_key = row[0]
+        if type_key in self.type_jobs_views:
+            self.type_jobs_views.discard(type_key)
+        else:
+            self.type_jobs_views.add(type_key)
+        await self.refresh_view()
 
     async def action_toggle_expand(self) -> None:
         table = self.table
