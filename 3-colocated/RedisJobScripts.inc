@@ -323,51 +323,73 @@ return RESULT_OK
  * ARGV[2] is the server ID that first created the type, ARGV[3] is metadata
  * pair count, and remaining args are field/value pairs.
  */
-const char* const kInitializeTypeSummaryMetadataScript = R"lua(
-local summaryKey = KEYS[1]
-local keyType = redis.call('TYPE', summaryKey).ok
-if keyType ~= 'none' and keyType ~= 'hash' then
-  return redis.error_reply('wrong key type')
-end
-redis.call('HSETNX', summaryKey, 'meta:createdAt', ARGV[1])
-redis.call('HSETNX', summaryKey, 'meta:createdByServerId', ARGV[2])
-local count = tonumber(ARGV[3])
-local cursor = 4
-for i = 1, count do
-  redis.call('HSET', summaryKey, 'meta:' .. ARGV[cursor], ARGV[cursor + 1])
-  cursor = cursor + 2
-end
-return 1
-)lua";
+// Per-type registration. All three keys share the {serverType} hash tag.
+// Type metadata, server metadata, registeredAt, and ACTIVE are committed by
+// one execution so a crash cannot leave these per-type registration steps split.
+const char* const kRegisterAndActivateServerScript = R"lua(
+local typeSummaryKey = KEYS[1]
+local serverSummaryKey = KEYS[2]
+local stateKey = KEYS[3]
 
- /**
-  * @brief Merges caller metadata into one server-ID summary hash.
-  *
-  * KEYS[1] is the server summary hash. ARGV[1] is metadata pair count;
-  * remaining arguments are field/value pairs.
-  */
-const char* const kSetServerSummaryMetadataScript = R"lua(
-local summaryKey = KEYS[1]
-local keyType = redis.call('TYPE', summaryKey).ok
-if keyType ~= 'none' and keyType ~= 'hash' then
-  return redis.error_reply('wrong key type')
+local function validHashOrNone(key)
+  local t = redis.call('TYPE', key).ok
+  return t == 'none' or t == 'hash'
 end
-local count = tonumber(ARGV[1])
-if not count or count < 0 or count ~= math.floor(count) or
-   #ARGV ~= 1 + count * 2 then
+
+if not validHashOrNone(typeSummaryKey) or
+   not validHashOrNone(serverSummaryKey) or
+   not validHashOrNone(stateKey) then
+  return redis.error_reply('wrong registration key type')
+end
+
+-- ARGV: serverId, type-createdAt, type metadata count/pairs,
+--       server metadata count/pairs.
+local typeCount = tonumber(ARGV[3])
+if not typeCount or typeCount < 0 or typeCount ~= math.floor(typeCount) then
+  return redis.error_reply('invalid server-type metadata count')
+end
+local serverCountIndex = 4 + typeCount * 2
+if serverCountIndex > #ARGV then
+  return redis.error_reply('truncated server-type metadata arguments')
+end
+local serverCount = tonumber(ARGV[serverCountIndex])
+if not serverCount or serverCount < 0 or
+   serverCount ~= math.floor(serverCount) or
+   #ARGV ~= serverCountIndex + serverCount * 2 then
   return redis.error_reply('invalid server metadata arguments')
 end
-local cursor = 2
-for i = 1, count do
-  redis.call('HSET', summaryKey, 'meta:' .. ARGV[cursor], ARGV[cursor + 1])
+
+-- Do not write metadata or activate an identity that already has state,
+-- including a DELETING retirement tombstone.
+local serverId = ARGV[1]
+if redis.call('HGET', stateKey, serverId) ~= false then
+  return 0
+end
+
+-- Generate the activation timestamp before the first write. Redis TIME keeps
+-- this timestamp in the same clock domain as the other lifecycle timestamps.
+local now = redis.call('TIME')
+local nowMs = tonumber(now[1]) * 1000 + math.floor(tonumber(now[2]) / 1000)
+
+redis.call('HSETNX', typeSummaryKey, 'meta:createdAt', ARGV[2])
+redis.call('HSETNX', typeSummaryKey, 'meta:createdByServerId', serverId)
+
+local cursor = 4
+for i = 1, typeCount do
+  redis.call('HSET', typeSummaryKey, 'meta:' .. ARGV[cursor], ARGV[cursor + 1])
   cursor = cursor + 2
 end
+
+cursor = serverCountIndex + 1
+for i = 1, serverCount do
+  redis.call('HSET', serverSummaryKey, 'meta:' .. ARGV[cursor], ARGV[cursor + 1])
+  cursor = cursor + 2
+end
+
+redis.call('HSETNX', serverSummaryKey, 'meta:registeredAt', tostring(nowMs))
+redis.call('HSET', stateKey, serverId, 'ACTIVE')
 return 1
 )lua";
-
-// Compatibility names for the shorter server-summary metadata script name.
-const char* const kSetServerSummaryMetaScript = kSetServerSummaryMetadataScript;
-const char* const KSetServerSummaryMetaScript = kSetServerSummaryMetadataScript;
 
 const char* const kRegisterServerScript = R"lua(
 local serverTypesKey = KEYS[1]
@@ -403,35 +425,6 @@ return 1
 )lua";
 
 
-// Per-type lifecycle activation. The state and summary keys share {serverType},
-// so ACTIVE and its Redis-generated registration timestamp are committed together.
-const char* const kActivateServerScript = R"lua(
-local stateKey = KEYS[1]
-local serverSummaryKey = KEYS[2]
-local stateType = redis.call('TYPE', stateKey).ok
-local summaryType = redis.call('TYPE', serverSummaryKey).ok
-if (stateType ~= 'none' and stateType ~= 'hash') or
-   (summaryType ~= 'none' and summaryType ~= 'hash') then
-  return redis.error_reply('wrong activation key type')
-end
-local current = redis.call('HGET', stateKey, ARGV[1])
-if current == 'ACTIVE' then
-  -- Backfill ACTIVE servers created before registeredAt metadata was added.
-  -- HSETNX preserves the original timestamp whenever it already exists.
-  if not redis.call('HGET', serverSummaryKey, 'meta:registeredAt') then
-    local now = redis.call('TIME')
-    local nowMs = tonumber(now[1]) * 1000 + math.floor(tonumber(now[2]) / 1000)
-    redis.call('HSETNX', serverSummaryKey, 'meta:registeredAt', tostring(nowMs))
-  end
-  return 1
-end
-if current ~= false then return 0 end
-local now = redis.call('TIME')
-local nowMs = tonumber(now[1]) * 1000 + math.floor(tonumber(now[2]) / 1000)
-redis.call('HSETNX', serverSummaryKey, 'meta:registeredAt', tostring(nowMs))
-redis.call('HSET', stateKey, ARGV[1], 'ACTIVE')
-return 1
-)lua";
 
 // Heartbeat refresh and live-set publication are one atomic per-type action.
 const char* const kRefreshHeartbeatScript = R"lua(
