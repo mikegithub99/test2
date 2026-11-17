@@ -12,7 +12,7 @@
 #include <memory>
 #include <string>
 #include <utility>
-#include <std::variant>
+#include <variant>
 
 #include <sw/redis++/redis++.h>
 
