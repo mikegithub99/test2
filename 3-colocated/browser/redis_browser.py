@@ -703,19 +703,53 @@ return 1
         self.client.srem("servers:{registry}:types", server_type)
 
     async def action_toggle_type_jobs(self) -> None:
-        """Toggle the selected server type between hierarchy and all its jobs."""
+        """Toggle the owning server type's hierarchy and type-wide jobs view.
+
+        The shortcut works from the type row, any server row, or any job row
+        belonging to that type.
+        """
         table = self.table
         if table is None or not 0 <= table.cursor_row < len(self.last_rows):
             return
+
         row = self.last_rows[table.cursor_row]
-        if row[6] != 0:
+        level, parent = row[6], row[7]
+        if level == 0:
+            type_key = row[0]
+        elif level == 1:
+            type_key = parent
+        elif parent in self.type_jobs_views:
+            # A job in the type-wide jobs view is directly parented by type.
+            type_key = parent
+        elif level == 2:
+            # A server-specific job is parented by its server row.
+            server_row = next(
+                (item for item in self.last_rows if item[0] == parent and item[6] == 1),
+                None,
+            )
+            type_key = server_row[7] if server_row else None
+        else:
+            type_key = None
+
+        if not type_key:
             return
-        type_key = row[0]
+
         if type_key in self.type_jobs_views:
             self.type_jobs_views.discard(type_key)
         else:
             self.type_jobs_views.add(type_key)
+
         await self.refresh_view()
+
+        # The selected server/job may no longer be visible after the mode
+        # switch. Keep the cursor on the owning type header in either mode.
+        if self.table is not None:
+            type_index = next(
+                (i for i, item in enumerate(self.last_rows) if item[0] == type_key),
+                None,
+            )
+            if type_index is not None:
+                self.table.move_cursor(row=type_index, column=0, animate=False)
 
     async def action_toggle_expand(self) -> None:
         table = self.table
