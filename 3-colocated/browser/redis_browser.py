@@ -367,6 +367,11 @@ class RedisBrowser(App):
         if row[6] == 2:
             metadata = row[9] if len(row) > 9 else {}
             self.push_screen(JobDetailsScreen(row[0], metadata))
+        elif row[6] == 0 and row[0] in self.type_jobs_views:
+            # Enter on the type header exits its type-wide jobs view and
+            # returns to the server-ID hierarchy, preserving saved expansion.
+            self.type_jobs_views.discard(row[0])
+            await self.refresh_view()
         else:
             await self.action_toggle_expand()
 
