@@ -240,7 +240,23 @@ This is intentionally a coarse safeguard: Redis records whether the ID is still 
 
 ## Dashboard read consistency
 
-`getServerJobs()` first discovers references, then executes one Lua snapshot with the index and all referenced job hashes declared in `KEYS`. The script revalidates index membership and reads the hashes atomically. If cleanup changed the index between discovery and snapshot execution, the read returns an error rather than a partial list; callers may retry.
+The job retrieval APIs are designed for live monitoring and intentionally provide **best-effort reads**, not a complete point-in-time snapshot or an event history.
+
+- `getServerJobs(serverType, serverId)` reads candidates from `jobs:server:{<serverType>}:<serverId>`.
+- `getServerTypeJobs(serverType)` reads candidates from `jobs:type:{<serverType>}`, covering all servers of that type.
+
+For either API, C++ first enumerates the relevant index with `SMEMBERS`, then invokes one Lua script with the index key and every candidate job hash key explicitly declared in `KEYS` for Redis Cluster. During that atomic Lua execution, the script rechecks each candidate's current index membership and reads the hash if it still exists.
+
+Normal concurrent job churn is not a snapshot error:
+- A candidate no longer present in the index is skipped.
+- A candidate whose hash has disappeared is skipped.
+- A job added after the initial `SMEMBERS` is not in the candidate list and is omitted until a later refresh.
+- A candidate still indexed with a valid hash is returned.
+- Wrong Redis key types and inconsistent ownership data remain integrity errors.
+
+The returned collection is therefore the initially enumerated candidates that remain indexed and have a hash when Lua processes them. The filtering and hash reads are atomic with one another, but the initial enumeration happens earlier; the result is not a full view of every job present at the Lua execution instant. A polling dashboard may also miss intermediate states if a job transitions several times between refreshes. That is expected for a transient live view, not an audit log.
+
+These best-effort reads do not weaken lifecycle-write guarantees. Job creation, transitions, and completion continue to update the job hash, indexes, and counters atomically in their lifecycle Lua scripts.
 
 `getServerSummaries()` discovers IDs in the `{registry}` slot, then reads all extant summary hashes in one Lua execution in the `{serverType}` slot. Summary hashes are mutually consistent at that script's execution point. The two steps cannot form one global point-in-time snapshot across Redis Cluster slots; a summary removed after registry discovery is omitted.
 
