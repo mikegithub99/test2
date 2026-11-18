@@ -1,7 +1,7 @@
 /**
- * @file RedisHeartbeatManager.cc
- * @brief Implements worker heartbeat publication and distributed cleanup.
- */
+   * @file RedisHeartbeatManager.cc
+   * @brief Implements worker heartbeat publication and distributed cleanup.
+   */
 
 #include "RedisHeartbeatManager.h"
 
@@ -452,159 +452,159 @@ namespace
 } // namespace
 
 /**
- * @brief Constructs the cleanup manager, loads its configuration, and starts cleanup.
- * @param provider Source of manager timing settings; an empty provider selects defaults.
- * @throws std::invalid_argument if a configured duration is not positive.
- */
+   * @brief Constructs the cleanup manager, loads its configuration, and starts cleanup.
+   * @param provider Source of manager timing settings; an empty provider selects defaults.
+   * @throws std::invalid_argument if a configured duration is not positive.
+   */
 RedisHeartbeatManager::RedisHeartbeatManager(ConfigProvider provider)
 {
-  // Resolve the status configuration first. When disabled, do not initialize
-  // Redis, validate heartbeat timing, or start the cleanup thread.
-  const auto status = RedisJobStatus::Instance();
-  if (!status->isEnabled())
-  {
-    return;
-  }
+   // Resolve the status configuration first. When disabled, do not initialize
+   // Redis, validate heartbeat timing, or start the cleanup thread.
+   const auto status = RedisJobStatus::Instance();
+   if (!status->isEnabled())
+   {
+      return;
+   }
 
-  m_config = provider ? provider() : Config{};
-  if (m_config.heartbeatTtlSeconds <= 0 ||
-      m_config.heartbeatRefreshIntervalSeconds <= 0 ||
-      m_config.cleanupLeaseTtlMilliseconds <= 0 ||
-      m_config.cleanupLeaseRenewIntervalSeconds <= 0 ||
-      m_config.cleanupScanIntervalSeconds <= 0 ||
-      m_config.firstHeartbeatTimeoutSeconds <= 0 ||
-      m_config.retiredTombstoneRetentionSeconds <= 0)
-  {
-    throw std::invalid_argument(
-        "RedisHeartbeatManager: all configured durations must be positive");
-  }
+   m_config = provider ? provider() : Config{};
+   if (m_config.heartbeatTtlSeconds <= 0 ||
+         m_config.heartbeatRefreshIntervalSeconds <= 0 ||
+         m_config.cleanupLeaseTtlMilliseconds <= 0 ||
+         m_config.cleanupLeaseRenewIntervalSeconds <= 0 ||
+         m_config.cleanupScanIntervalSeconds <= 0 ||
+         m_config.firstHeartbeatTimeoutSeconds <= 0 ||
+         m_config.retiredTombstoneRetentionSeconds <= 0)
+   {
+      throw std::invalid_argument(
+            "RedisHeartbeatManager: all configured durations must be positive");
+   }
 
-  m_client = RedisClient::Instance();
-  m_enabled = true;
-  m_cleanupThread = std::thread(&RedisHeartbeatManager::cleanupLoop, this);
+   m_client = RedisClient::Instance();
+   m_enabled = true;
+   m_cleanupThread = std::thread(&RedisHeartbeatManager::cleanupLoop, this);
 }
 
 /** @brief Stops the cleanup thread before destroying the manager. */
 RedisHeartbeatManager::~RedisHeartbeatManager()
 {
-  stop();
+   stop();
 }
 
 /**
- * @brief Starts the process-wide cleanup manager exactly once.
- * @param provider Optional source of manager timing settings.
- */
+   * @brief Starts the process-wide cleanup manager exactly once.
+   * @param provider Optional source of manager timing settings.
+   */
 std::shared_ptr<RedisHeartbeatManager> RedisHeartbeatManager::Instance(
-    ConfigProvider provider)
+      ConfigProvider provider)
 {
-  static const std::shared_ptr<RedisHeartbeatManager> instance(
-      new RedisHeartbeatManager(std::move(provider)));
-  return instance;
+   static const std::shared_ptr<RedisHeartbeatManager> instance(
+         new RedisHeartbeatManager(std::move(provider)));
+   return instance;
 }
 
 /**
- * @brief Starts the process-wide heartbeat publisher once.
- *
- * Uses the configured RedisJobStatus singleton and manager heartbeat timings.
- */
+   * @brief Starts the process-wide heartbeat publisher once.
+   *
+   * Uses the configured RedisJobStatus singleton and manager heartbeat timings.
+   */
 void RedisHeartbeatManager::HeartbeatStart()
 {
-  const auto status = RedisJobStatus::Instance();
-  if (!m_enabled || !status->isEnabled())
-  {
-    return;
-  }
+   const auto status = RedisJobStatus::Instance();
+   if (!m_enabled || !status->isEnabled())
+   {
+      return;
+   }
 
-  std::lock_guard<std::mutex> lock(m_heartbeatMutex);
+   std::lock_guard<std::mutex> lock(m_heartbeatMutex);
 
-  if (!m_heartbeatRunner)
-  {
-    m_heartbeatRunner.reset(new HeartbeatRunner(
-        status,
-        m_config.heartbeatTtlSeconds,
-        m_config.heartbeatRefreshIntervalSeconds));
-  }
+   if (!m_heartbeatRunner)
+   {
+      m_heartbeatRunner.reset(new HeartbeatRunner(
+            status,
+            m_config.heartbeatTtlSeconds,
+            m_config.heartbeatRefreshIntervalSeconds));
+   }
 }
 
 /**
- * @brief Stops and joins the cleanup thread.
- *
- * The heartbeat publisher has an independent lifetime and is stopped when
- * the manager is destroyed.
- */
+   * @brief Stops and joins the cleanup thread.
+   *
+   * The heartbeat publisher has an independent lifetime and is stopped when
+   * the manager is destroyed.
+   */
 void RedisHeartbeatManager::stop()
 {
-  {
-    std::lock_guard<std::mutex> lock(m_mutex);
-    m_stopping = true;
-  }
+   {
+      std::lock_guard<std::mutex> lock(m_mutex);
+      m_stopping = true;
+   }
 
-  m_wakeup.notify_all();
+   m_wakeup.notify_all();
 
-  if (m_cleanupThread.joinable())
-  {
-    m_cleanupThread.join();
-  }
+   if (m_cleanupThread.joinable())
+   {
+      m_cleanupThread.join();
+   }
 }
 
 /**
- * @brief Runs cleanup scans until shutdown is requested.
- *
- * Scan failures are logged; the loop remains alive and retries after the
- * configured scan interval.
- */
+   * @brief Runs cleanup scans until shutdown is requested.
+   *
+   * Scan failures are logged; the loop remains alive and retries after the
+   * configured scan interval.
+   */
 void RedisHeartbeatManager::cleanupLoop()
 {
-  std::unique_lock<std::mutex> lock(m_mutex);
+   std::unique_lock<std::mutex> lock(m_mutex);
 
-  while (!m_stopping)
-  {
-    lock.unlock();
+   while (!m_stopping)
+   {
+      lock.unlock();
 
-    try
-    {
-      scanOnce();
-    }
-    catch (const std::exception& e)
-    {
-      std::cerr << "RedisHeartbeatManager: cleanup scan failed: "
-                << e.what() << '\n';
-    }
-    catch (...)
-    {
-      std::cerr
-          << "RedisHeartbeatManager: cleanup scan failed: unknown exception\n";
-    }
+      try
+      {
+         scanOnce();
+      }
+      catch (const std::exception& e)
+      {
+         std::cerr << "RedisHeartbeatManager: cleanup scan failed: "
+                        << e.what() << '\n';
+      }
+      catch (...)
+      {
+         std::cerr
+               << "RedisHeartbeatManager: cleanup scan failed: unknown exception\n";
+      }
 
-    lock.lock();
-    m_wakeup.wait_for(
-        lock,
-        std::chrono::seconds(m_config.cleanupScanIntervalSeconds),
-        [this]
-        {
-          return m_stopping;
-        });
-  }
+      lock.lock();
+      m_wakeup.wait_for(
+            lock,
+            std::chrono::seconds(m_config.cleanupScanIntervalSeconds),
+            [this]
+            {
+               return m_stopping;
+            });
+   }
 }
 
 /**
- * @brief Performs one distributed scan for workers with expired heartbeats.
- *
- * The process first acquires the registry-slot cleanup lease. For each
- * registered server, a per-type Lua script performs authoritative fencing.
- * Once fenced, a second Lua script removes the server's jobs and summaries.
- * The lease is renewed during long scans and released on success or failure.
- */
+   * @brief Performs one distributed scan for workers with expired heartbeats.
+   *
+   * The process first acquires the registry-slot cleanup lease. For each
+   * registered server, a per-type Lua script performs authoritative fencing.
+   * Once fenced, a second Lua script removes the server's jobs and summaries.
+   * The lease is renewed during long scans and released on success or failure.
+   */
 void RedisHeartbeatManager::scanOnce()
 {
-  if (!m_enabled)
-  {
-    return;
-  }
+   if (!m_enabled)
+   {
+      return;
+   }
 
-  const string token = ownerToken();
-  m_client->execute([&](auto& redis)
-  {
-    runCleanupScan(redis, m_config, token);
-  });
+   const string token = ownerToken();
+   m_client->execute([&](auto& redis)
+   {
+      runCleanupScan(redis, m_config, token);
+   });
 }
