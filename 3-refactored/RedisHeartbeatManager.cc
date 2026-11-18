@@ -340,7 +340,7 @@ void RedisHeartbeatManager::scanOnce()
             evalScript(redis, kAcquireCleanupLeaseScript, leaseKeys, acquireArgs),
             {{0, LeaseAcquireResult::NotAcquired}, {1, LeaseAcquireResult::Acquired}},
             "lease acquisition");
-        if (acquired == LeaseAcquireResult::AlreadyOwned)
+        if (acquired == LeaseAcquireResult::NotAcquired)
         {
           return;
         }
