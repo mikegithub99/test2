@@ -709,7 +709,11 @@ vector<RedisJobStatus::Job> parseJobsSnapshot(
     throw runtime_error("RedisJobStatus: empty job snapshot");
   }
   std::size_t cursor = 0;
-  const auto count = static_cast<std::size_t>(stoull(flat[cursor++]));
+  const auto count = parseSnapshotSize(flat[cursor++], "job record count");
+  if (count > (flat.size() - cursor) / 2)
+  {
+    throw runtime_error("RedisJobStatus: malformed job record count");
+  }
   vector<RedisJobStatus::Job> jobs;
   jobs.reserve(count);
   for (std::size_t i = 0; i < count; ++i)
@@ -719,7 +723,7 @@ vector<RedisJobStatus::Job> parseJobsSnapshot(
       throw runtime_error("RedisJobStatus: malformed job record");
     }
     const string reference = flat[cursor++];
-    const auto fields = static_cast<std::size_t>(stoull(flat[cursor++]));
+    const auto fields = parseSnapshotSize(flat[cursor++], "job field count");
     if (cursor > flat.size() || fields > (flat.size() - cursor) / 2)
     {
       throw runtime_error("RedisJobStatus: truncated job record");
