@@ -256,6 +256,45 @@ map<string, int64_t> countersFromSnapshot(
   return counters;
 }
 
+vector<RedisJobStatus::ServerSummary> parseServerSummariesSnapshot(
+    const vector<string>& flat)
+{
+  if (flat.empty())
+  {
+    throw runtime_error("RedisJobStatus: empty summary snapshot");
+  }
+
+  std::size_t cursor = 0;
+  const auto count = parseSnapshotSize(flat[cursor++], "summary record count");
+  if (count > (flat.size() - cursor) / 2)
+  {
+    throw runtime_error("RedisJobStatus: malformed summary count");
+  }
+
+  vector<RedisJobStatus::ServerSummary> summaries;
+  summaries.reserve(count);
+  for (std::size_t i = 0; i < count; ++i)
+  {
+    if (cursor + 2 > flat.size())
+    {
+      throw runtime_error("RedisJobStatus: malformed summary record");
+    }
+
+    RedisJobStatus::ServerSummary summary;
+    summary.serverId = flat[cursor++];
+    const auto fields = parseSnapshotSize(flat[cursor++], "summary field count");
+    summary.counters = countersFromSnapshot(flat, cursor, fields);
+    cursor += fields * 2;
+    summaries.push_back(std::move(summary));
+  }
+
+  if (cursor != flat.size())
+  {
+    throw runtime_error("RedisJobStatus: trailing summary snapshot data");
+  }
+  return summaries;
+}
+
 template <typename Redis>
 map<string, int64_t> readCounters(
     Redis& redis,
@@ -658,42 +697,22 @@ RedisJobStatus::getServerSummaries(const string& serverType)
     return {};
   }
   validateIdentifier(serverType, "serverType", true);
+
   return m_client->execute([&](auto& redis)
   {
     vector<string> ids;
     redis.smembers(serverRegistryKey(serverType), back_inserter(ids));
-    KeyList keys = {typeSummaryKey(serverType)}; // routing key when registry is empty
-    ArgList args = ids;
+
+    // Keep a same-slot routing key even when the registry contains no servers.
+    KeyList keys = {typeSummaryKey(serverType)};
     for (const auto& id : ids)
+    {
       keys.push_back(serverSummaryKey(serverType, id));
-    const auto flat = evalStrings(redis, kReadServerSummariesSnapshotScript, keys, args);
-    if (flat.empty())
-    {
-      throw runtime_error("RedisJobStatus: empty summary snapshot");
     }
-    std::size_t cursor = 0;
-    const auto count = parseSnapshotSize(flat[cursor++], "summary record count");
-    if (count > (flat.size() - cursor) / 2) throw runtime_error("RedisJobStatus: malformed summary count");
-    vector<ServerSummary> summaries;
-    summaries.reserve(count);
-    for (std::size_t i = 0; i < count; ++i)
-    {
-      if (cursor + 2 > flat.size())
-      {
-        throw runtime_error("RedisJobStatus: malformed summary record");
-      }
-      ServerSummary summary;
-      summary.serverId = flat[cursor++];
-      const auto fields = parseSnapshotSize(flat[cursor++], "summary field count");
-      summary.counters = countersFromSnapshot(flat, cursor, fields);
-      cursor += fields * 2;
-      summaries.push_back(std::move(summary));
-    }
-    if (cursor != flat.size())
-    {
-      throw runtime_error("RedisJobStatus: trailing summary snapshot data");
-    }
-    return summaries;
+
+    const auto flat =
+        evalStrings(redis, kReadServerSummariesSnapshotScript, keys, ids);
+    return parseServerSummariesSnapshot(flat);
   });
 }
 
