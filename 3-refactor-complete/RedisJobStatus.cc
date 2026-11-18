@@ -44,395 +44,466 @@ namespace
 #include "RedisJobScripts.inc"
 
 
-/** @brief Builds a collision-safe reference from a server ID and job ID. */
-string jobReference(const string& serverId, const string& jobId)
-{
-  return to_string(serverId.size()) + ":" + serverId + ":" + jobId;
-}
+   /** @brief Builds a collision-safe reference from a server ID and job ID.
+      * @param serverId Server identifier.
+      * @param jobId Job identifier.
+      * @return Result produced by this helper.
+      */
+   string jobReference(const string& serverId, const string& jobId)
+   {
+      return to_string(serverId.size()) + ":" + serverId + ":" + jobId;
+   }
 
-/** @brief Builds the Redis hash key for a job in the server-type Cluster slot. */
-string jobKey(const string& serverType, const string& serverId, const string& jobId)
-{
-  return "job:{" + serverType + "}:" + jobReference(serverId, jobId);
-}
+   /** @brief Builds the Redis hash key for a job in the server-type Cluster slot.
+      * @param serverType Server type used as the Redis Cluster hash tag.
+      * @param serverId Server identifier.
+      * @param jobId Job identifier.
+      * @return Result produced by this helper.
+      */
+   string jobKey(const string& serverType, const string& serverId, const string& jobId)
+   {
+      return "job:{" + serverType + "}:" + jobReference(serverId, jobId);
+   }
 
-/** @brief Returns the sorted-set key indexing jobs for a server type. */
-string typeJobsKey(const string& serverType)
-{
-  return "jobs:type:{" + serverType + "}";
-}
+   /** @brief Returns the sorted-set key indexing jobs for a server type.
+      * @param serverType Server type used as the Redis Cluster hash tag.
+      * @return Result produced by this helper.
+      */
+   string typeJobsKey(const string& serverType)
+   {
+      return "jobs:type:{" + serverType + "}";
+   }
 
-/** @brief Returns the sorted-set key indexing jobs owned by one server. */
-string serverJobsKey(
-    const string& serverType,
-    const string& serverId)
-{
-  return "jobs:server:{" + serverType + "}:" + serverId;
-}
+   /** @brief Returns the sorted-set key indexing jobs owned by one server.
+      * @param serverType Server type used as the Redis Cluster hash tag.
+      * @param serverId Server identifier.
+      * @return Result produced by this helper.
+      */
+   string serverJobsKey(
+         const string& serverType,
+         const string& serverId)
+   {
+      return "jobs:server:{" + serverType + "}:" + serverId;
+   }
 
-/** @brief Returns the summary hash key for a server type. */
-string typeSummaryKey(const string& serverType)
-{
-  return "summary:type:{" + serverType + "}";
-}
+   /** @brief Returns the summary hash key for a server type.
+      * @param serverType Server type used as the Redis Cluster hash tag.
+      * @return Result produced by this helper.
+      */
+   string typeSummaryKey(const string& serverType)
+   {
+      return "summary:type:{" + serverType + "}";
+   }
 
-/** @brief Returns the summary hash key for one server. */
-string serverSummaryKey(
-    const string& serverType,
-    const string& serverId)
-{
-  return "summary:server:{" + serverType + "}:" + serverId;
-}
+   /** @brief Returns the summary hash key for one server.
+      * @param serverType Server type used as the Redis Cluster hash tag.
+      * @param serverId Server identifier.
+      * @return Result produced by this helper.
+      */
+   string serverSummaryKey(
+         const string& serverType,
+         const string& serverId)
+   {
+      return "summary:server:{" + serverType + "}:" + serverId;
+   }
 
-/** @brief Returns the registry-slot set key for servers of one type. */
-string serverRegistryKey(const string& serverType)
-{
-  return "servers:{registry}:type:" + serverType;
-}
+   /** @brief Returns the registry-slot set key for servers of one type.
+      * @param serverType Server type used as the Redis Cluster hash tag.
+      * @return Result produced by this helper.
+      */
+   string serverRegistryKey(const string& serverType)
+   {
+      return "servers:{registry}:type:" + serverType;
+   }
 
-const string kServerTypesKey = "servers:{registry}:types";
+   const string kServerTypesKey = "servers:{registry}:types";
 
-/** @brief Returns the heartbeat key for one server. */
-string heartbeatKey(
-    const string& serverType,
-    const string& serverId)
-{
-  return "heartbeat:server:{" + serverType + "}:" + serverId;
-}
+   /** @brief Returns the heartbeat key for one server.
+      * @param serverType Server type used as the Redis Cluster hash tag.
+      * @param serverId Server identifier.
+      * @return Result produced by this helper.
+      */
+   string heartbeatKey(
+         const string& serverType,
+         const string& serverId)
+   {
+      return "heartbeat:server:{" + serverType + "}:" + serverId;
+   }
 
-/** @brief Returns the live-server set key for a server type. */
-string liveServersKey(const string& serverType)
-{
-  return "servers:live:{" + serverType + "}";
-}
+   /** @brief Returns the live-server set key for a server type.
+      * @param serverType Server type used as the Redis Cluster hash tag.
+      * @return Result produced by this helper.
+      */
+   string liveServersKey(const string& serverType)
+   {
+      return "servers:live:{" + serverType + "}";
+   }
 
-/** @brief Returns the lifecycle-state hash key for a server type. */
-string serverStateKey(const string& serverType)
-{
-  return "servers:state:{" + serverType + "}";
-}
+   /** @brief Returns the lifecycle-state hash key for a server type.
+      * @param serverType Server type used as the Redis Cluster hash tag.
+      * @return Result produced by this helper.
+      */
+   string serverStateKey(const string& serverType)
+   {
+      return "servers:state:{" + serverType + "}";
+   }
 
-using KeyList = vector<string>;
-using ArgList = vector<string>;
+   using KeyList = vector<string>;
+   using ArgList = vector<string>;
 
-/** @brief Builds the same-slot Redis keys used by job lifecycle scripts. */
-KeyList lifecycleKeys(
-    const string& jobId,
-    const string& serverType,
-    const string& serverId)
-{
-  return {
-      jobKey(serverType, serverId, jobId),
-      typeJobsKey(serverType),
-      serverJobsKey(serverType, serverId),
-      typeSummaryKey(serverType),
-      serverSummaryKey(serverType, serverId),
-      serverStateKey(serverType)};
-}
+   /** @brief Builds the same-slot Redis keys used by job lifecycle scripts.
+      * @param jobId Job identifier.
+      * @param serverType Server type used as the Redis Cluster hash tag.
+      * @param serverId Server identifier.
+      * @return Result produced by this helper.
+      */
+   KeyList lifecycleKeys(
+         const string& jobId,
+         const string& serverType,
+         const string& serverId)
+   {
+      return {
+            jobKey(serverType, serverId, jobId),
+            typeJobsKey(serverType),
+            serverJobsKey(serverType, serverId),
+            typeSummaryKey(serverType),
+            serverSummaryKey(serverType, serverId),
+            serverStateKey(serverType)};
+   }
 
-// Job hash fields reserved for the lifecycle API.
-constexpr const char* kJobIdField = "jobId";
-constexpr const char* kStatusField = "status";
-constexpr const char* kServerTypeField = "serverType";
-constexpr const char* kServerIdField = "serverId";
-constexpr const char* kReservedJobMetadataFields[] = {
-    kJobIdField, kStatusField, kServerTypeField, kServerIdField};
+   // Job hash fields reserved for the lifecycle API.
+   constexpr const char* kJobIdField = "jobId";
+   constexpr const char* kStatusField = "status";
+   constexpr const char* kServerTypeField = "serverType";
+   constexpr const char* kServerIdField = "serverId";
+   constexpr const char* kReservedJobMetadataFields[] = {
+         kJobIdField, kStatusField, kServerTypeField, kServerIdField};
 
-// Type-summary metadata initialized once per server type.
-constexpr const char* kCreatedAtMetadataField = "createdAt";
-constexpr const char* kCreatedByServerIdMetadataField = "createdByServerId";
+   // Type-summary metadata initialized once per server type.
+   constexpr const char* kCreatedAtMetadataField = "createdAt";
+   constexpr const char* kCreatedByServerIdMetadataField = "createdByServerId";
 
-/** @brief Reports whether a job metadata field is owned by the lifecycle API. */
-bool isReservedJobMetadataField(const string& field)
-{
-  for (const char* reserved : kReservedJobMetadataFields)
-  {
-    if (field == reserved)
-    {
-      return true;
-    }
-  }
-  return false;
-}
+   /** @brief Reports whether a job metadata field is owned by the lifecycle API.
+      * @param field Metadata field name to inspect.
+      * @return Result produced by this helper.
+      */
+   bool isReservedJobMetadataField(const string& field)
+   {
+      for (const char* reserved : kReservedJobMetadataFields)
+      {
+         if (field == reserved)
+         {
+            return true;
+         }
+      }
+      return false;
+   }
 
-/** @brief Reports whether a server-type metadata field is internally managed. */
-bool isReservedServerTypeMetadataField(const string& field)
-{
-  return field == kCreatedAtMetadataField ||
-         field == kCreatedByServerIdMetadataField;
-}
+   /** @brief Reports whether a server-type metadata field is internally managed.
+      * @param field Metadata field name to inspect.
+      * @return Result produced by this helper.
+      */
+   bool isReservedServerTypeMetadataField(const string& field)
+   {
+      return field == kCreatedAtMetadataField ||
+                  field == kCreatedByServerIdMetadataField;
+   }
 
-/** @brief Reports whether a server metadata field is internally managed. */
-bool isReservedServerMetadataField(const string& field)
-{
-  return field == "registeredAt";
-}
+   /** @brief Reports whether a server metadata field is internally managed.
+      * @param field Metadata field name to inspect.
+      * @return Result produced by this helper.
+      */
+   bool isReservedServerMetadataField(const string& field)
+   {
+      return field == "registeredAt";
+   }
 
-// Appends a count and accepted field/value pairs in the Lua argument format.
-/**
- * @brief Appends filtered metadata fields in the argument format expected by Lua scripts.
- * @tparam IncludeField Predicate deciding whether each metadata field is included.
- * @param args Destination Lua argument list; receives a count followed by field/value pairs.
- * @param metadata Metadata fields to append.
- * @param includeField Predicate applied to each field name.
- */
-template <typename IncludeField>
-void appendMetadataArgs(
-    ArgList& args,
-    const map<string, string>& metadata,
-    IncludeField includeField)
-{
-  const auto countIndex = args.size();
-  args.push_back("0");
+   // Appends a count and accepted field/value pairs in the Lua argument format.
+   /**
+      * @brief Appends filtered metadata fields in the argument format expected by Lua scripts.
+      * @tparam IncludeField Predicate deciding whether each metadata field is included.
+      * @param args Destination Lua argument list; receives a count followed by field/value pairs.
+      * @param metadata Metadata fields to append.
+      * @param includeField Predicate applied to each field name.
+      */
+   template <typename IncludeField>
+   void appendMetadataArgs(
+         ArgList& args,
+         const map<string, string>& metadata,
+         IncludeField includeField)
+   {
+      const auto countIndex = args.size();
+      args.push_back("0");
 
-  std::size_t count = 0;
-  for (const auto& item : metadata)
-  {
-    if (!includeField(item.first))
-    {
-      continue;
-    }
-    args.push_back(item.first);
-    args.push_back(item.second);
-    ++count;
-  }
+      std::size_t count = 0;
+      for (const auto& item : metadata)
+      {
+         if (!includeField(item.first))
+         {
+            continue;
+         }
+         args.push_back(item.first);
+         args.push_back(item.second);
+         ++count;
+      }
 
-  args[countIndex] = to_string(count);
-}
+      args[countIndex] = to_string(count);
+   }
 
-/**
- * @brief Evaluates a Redis Lua script and converts its result to a 64-bit integer.
- * @tparam Redis Redis client or connection type providing the eval interface.
- * @param redis Redis connection used to execute the script.
- * @param script Lua script source.
- * @param keys Redis keys supplied as KEYS.
- * @param args Arguments supplied as ARGV.
- * @return Integer result returned by the script.
- */
-template <typename Redis>
-int64_t evalResult(
-    Redis& redis,
-    const string& script,
-    const KeyList& keys,
-    const ArgList& args)
-{
-  return redis.template eval<int64_t>(
-      script, keys.begin(), keys.end(), args.begin(), args.end());
-}
+   /**
+      * @brief Evaluates a Redis Lua script and converts its result to a 64-bit integer.
+      * @tparam Redis Redis client or connection type providing the eval interface.
+      * @param redis Redis connection used to execute the script.
+      * @param script Lua script source.
+      * @param keys Redis keys supplied as KEYS.
+      * @param args Arguments supplied as ARGV.
+      * @return Integer result returned by the script.
+      */
+   template <typename Redis>
+   int64_t evalResult(
+         Redis& redis,
+         const string& script,
+         const KeyList& keys,
+         const ArgList& args)
+   {
+      return redis.template eval<int64_t>(
+            script, keys.begin(), keys.end(), args.begin(), args.end());
+   }
 
-/**
- * @brief Evaluates a lifecycle script after prepending counter-validation logic.
- * @tparam Redis Redis client or connection type providing the eval interface.
- * @param redis Redis connection used to execute the script.
- * @param script Lifecycle Lua script source.
- * @param keys Redis keys supplied as KEYS.
- * @param args Arguments supplied as ARGV.
- * @return Integer result returned by the script.
- */
-template <typename Redis>
-int64_t evalCounterResult(
-    Redis& redis,
-    const char* script,
-    const KeyList& keys,
-    const ArgList& args)
-{
-  const string validatedScript = string(kCounterValidationPrelude) + script;
-  return evalResult(redis, validatedScript, keys, args);
-}
+   /**
+      * @brief Evaluates a lifecycle script after prepending counter-validation logic.
+      * @tparam Redis Redis client or connection type providing the eval interface.
+      * @param redis Redis connection used to execute the script.
+      * @param script Lifecycle Lua script source.
+      * @param keys Redis keys supplied as KEYS.
+      * @param args Arguments supplied as ARGV.
+      * @return Integer result returned by the script.
+      */
+   template <typename Redis>
+   int64_t evalCounterResult(
+         Redis& redis,
+         const char* script,
+         const KeyList& keys,
+         const ArgList& args)
+   {
+      const string validatedScript = string(kCounterValidationPrelude) + script;
+      return evalResult(redis, validatedScript, keys, args);
+   }
 
 
-/**
- * @brief Evaluates a Redis Lua script and converts its result to a string vector.
- * @tparam Redis Redis client or connection type providing the eval interface.
- * @param redis Redis connection used to execute the script.
- * @param script Lua script source.
- * @param keys Redis keys supplied as KEYS.
- * @param args Arguments supplied as ARGV.
- * @return String values returned by the script.
- */
-template <typename Redis>
-vector<string> evalStrings(Redis& redis, const string& script,
-                           const KeyList& keys, const ArgList& args)
-{
-  return redis.template eval<vector<string>>(
-      script, keys.begin(), keys.end(), args.begin(), args.end());
-}
+   /**
+      * @brief Evaluates a Redis Lua script and converts its result to a string vector.
+      * @tparam Redis Redis client or connection type providing the eval interface.
+      * @param redis Redis connection used to execute the script.
+      * @param script Lua script source.
+      * @param keys Redis keys supplied as KEYS.
+      * @param args Arguments supplied as ARGV.
+      * @return String values returned by the script.
+      */
+   template <typename Redis>
+   vector<string> evalStrings(Redis& redis, const string& script,
+                                             const KeyList& keys, const ArgList& args)
+   {
+      return redis.template eval<vector<string>>(
+            script, keys.begin(), keys.end(), args.begin(), args.end());
+   }
 
-/** @brief Parses a non-negative decimal counter, rejecting malformed or overflowing values. */
-int64_t parseCounter(const string& value, const string& name)
-{
-  try
-  {
-    if (value.empty() ||
-        !std::all_of(value.begin(), value.end(),
-                     [](unsigned char ch) { return ch >= '0' && ch <= '9'; }))
-    {
-      throw invalid_argument("invalid counter syntax");
-    }
-    std::size_t used = 0;
-    const auto parsed = stoll(value, &used);
-    if (used != value.size())
-    {
-      throw invalid_argument("invalid counter");
-    }
-    return parsed;
-  }
-  catch (const exception&)
-  {
-    throw runtime_error("RedisJobStatus: invalid non-negative integer counter '" +
-                        name + "'");
-  }
-}
+   /** @brief Parses a non-negative decimal counter, rejecting malformed or overflowing values.
+      * @param value Input value to parse or convert.
+      * @param name Counter name used in diagnostic errors.
+      * @return Result produced by this helper.
+      */
+   int64_t parseCounter(const string& value, const string& name)
+   {
+      try
+      {
+         if (value.empty() ||
+               !std::all_of(value.begin(), value.end(),
+                                    [](unsigned char ch) { return ch >= '0' && ch <= '9'; }))
+         {
+            throw invalid_argument("invalid counter syntax");
+         }
+         std::size_t used = 0;
+         const auto parsed = stoll(value, &used);
+         if (used != value.size())
+         {
+            throw invalid_argument("invalid counter");
+         }
+         return parsed;
+      }
+      catch (const exception&)
+      {
+         throw runtime_error("RedisJobStatus: invalid non-negative integer counter '" +
+                                       name + "'");
+      }
+   }
 
-/** @brief Extracts numeric counters from a flat field/value snapshot, excluding metadata. */
-map<string, int64_t> countersFromSnapshot(
-    const vector<string>& flat, std::size_t offset, std::size_t fieldCount)
-{
-  if (offset > flat.size() || fieldCount > (flat.size() - offset) / 2)
-  {
-    throw runtime_error("RedisJobStatus: malformed summary snapshot");
-  }
-  map<string, int64_t> counters;
-  for (std::size_t i = 0; i < fieldCount; ++i)
-  {
-    const auto& name = flat[offset + i * 2];
-    const auto& value = flat[offset + i * 2 + 1];
-    if (name.rfind("meta:", 0) == 0)
-    {
-      continue;
-    }
-    counters[name] = parseCounter(value, name);
-  }
-  return counters;
-}
+   /** @brief Extracts numeric counters from a flat field/value snapshot, excluding metadata.
+      * @param flat Flat field/value response returned by a Lua script.
+      * @param offset Index of the first field in the flat response.
+      * @param fieldCount Number of field/value pairs to parse.
+      * @return Result produced by this helper.
+      */
+   map<string, int64_t> countersFromSnapshot(
+         const vector<string>& flat, std::size_t offset, std::size_t fieldCount)
+   {
+      if (offset > flat.size() || fieldCount > (flat.size() - offset) / 2)
+      {
+         throw runtime_error("RedisJobStatus: malformed summary snapshot");
+      }
+      map<string, int64_t> counters;
+      for (std::size_t i = 0; i < fieldCount; ++i)
+      {
+         const auto& name = flat[offset + i * 2];
+         const auto& value = flat[offset + i * 2 + 1];
+         if (name.rfind("meta:", 0) == 0)
+         {
+            continue;
+         }
+         counters[name] = parseCounter(value, name);
+      }
+      return counters;
+   }
 
-std::size_t parseSnapshotSize(const string& value, const char* context);
+   std::size_t parseSnapshotSize(const string& value, const char* context);
 
-/** @brief Parses and validates the flat Lua response containing server summaries. */
-vector<RedisJobStatus::ServerSummary> parseServerSummariesSnapshot(
-    const vector<string>& flat)
-{
-  if (flat.empty())
-  {
-    throw runtime_error("RedisJobStatus: empty summary snapshot");
-  }
+   /** @brief Parses and validates the flat Lua response containing server summaries.
+      * @param flat Flat field/value response returned by a Lua script.
+      * @return Result produced by this helper.
+      */
+   vector<RedisJobStatus::ServerSummary> parseServerSummariesSnapshot(
+         const vector<string>& flat)
+   {
+      if (flat.empty())
+      {
+         throw runtime_error("RedisJobStatus: empty summary snapshot");
+      }
 
-  std::size_t cursor = 0;
-  const auto count = parseSnapshotSize(flat[cursor++], "summary record count");
-  if (count > (flat.size() - cursor) / 2)
-  {
-    throw runtime_error("RedisJobStatus: malformed summary count");
-  }
+      std::size_t cursor = 0;
+      const auto count = parseSnapshotSize(flat[cursor++], "summary record count");
+      if (count > (flat.size() - cursor) / 2)
+      {
+         throw runtime_error("RedisJobStatus: malformed summary count");
+      }
 
-  vector<RedisJobStatus::ServerSummary> summaries;
-  summaries.reserve(count);
-  for (std::size_t i = 0; i < count; ++i)
-  {
-    if (cursor + 2 > flat.size())
-    {
-      throw runtime_error("RedisJobStatus: malformed summary record");
-    }
+      vector<RedisJobStatus::ServerSummary> summaries;
+      summaries.reserve(count);
+      for (std::size_t i = 0; i < count; ++i)
+      {
+         if (cursor + 2 > flat.size())
+         {
+            throw runtime_error("RedisJobStatus: malformed summary record");
+         }
 
-    RedisJobStatus::ServerSummary summary;
-    summary.serverId = flat[cursor++];
-    const auto fields = parseSnapshotSize(flat[cursor++], "summary field count");
-    summary.counters = countersFromSnapshot(flat, cursor, fields);
-    cursor += fields * 2;
-    summaries.push_back(std::move(summary));
-  }
+         RedisJobStatus::ServerSummary summary;
+         summary.serverId = flat[cursor++];
+         const auto fields = parseSnapshotSize(flat[cursor++], "summary field count");
+         summary.counters = countersFromSnapshot(flat, cursor, fields);
+         cursor += fields * 2;
+         summaries.push_back(std::move(summary));
+      }
 
-  if (cursor != flat.size())
-  {
-    throw runtime_error("RedisJobStatus: trailing summary snapshot data");
-  }
-  return summaries;
-}
+      if (cursor != flat.size())
+      {
+         throw runtime_error("RedisJobStatus: trailing summary snapshot data");
+      }
+      return summaries;
+   }
 
-/**
- * @brief Reads numeric counters from a Redis summary hash, excluding metadata fields.
- * @tparam Redis Redis client or connection type providing the hgetall interface.
- * @param redis Redis connection used to read the hash.
- * @param key Redis summary hash key.
- * @return Map of counter names to their parsed values.
- */
-template <typename Redis>
-map<string, int64_t> readCounters(
-    Redis& redis,
-    const string& key)
-{
-  vector<pair<string, string>> fields;
-  redis.hgetall(key, back_inserter(fields));
+   /**
+      * @brief Reads numeric counters from a Redis summary hash, excluding metadata fields.
+      * @tparam Redis Redis client or connection type providing the hgetall interface.
+      * @param redis Redis connection used to read the hash.
+      * @param key Redis summary hash key.
+      * @return Map of counter names to their parsed values.
+      */
+   template <typename Redis>
+   map<string, int64_t> readCounters(
+         Redis& redis,
+         const string& key)
+   {
+      vector<pair<string, string>> fields;
+      redis.hgetall(key, back_inserter(fields));
 
-  map<string, int64_t> counters;
-  for (const auto& field : fields)
-  {
-    // Summary hashes also contain descriptive metadata; only numeric fields
-    // belong in the counters API.
-    if (field.first.rfind("meta:", 0) == 0)
-    {
-      continue;
-    }
-    counters[field.first] = parseCounter(field.second, field.first);
-  }
-  return counters;
-}
+      map<string, int64_t> counters;
+      for (const auto& field : fields)
+      {
+         // Summary hashes also contain descriptive metadata; only numeric fields
+         // belong in the counters API.
+         if (field.first.rfind("meta:", 0) == 0)
+         {
+            continue;
+         }
+         counters[field.first] = parseCounter(field.second, field.first);
+      }
+      return counters;
+   }
 
-/** @brief Parses a non-negative snapshot size and reports malformed values with context. */
-std::size_t parseSnapshotSize(const string& value, const char* context)
-{
-  try
-  {
-    if (value.empty() ||
-        !std::all_of(value.begin(), value.end(),
-                     [](unsigned char ch) { return ch >= '0' && ch <= '9'; }))
-    {
-      throw invalid_argument("invalid unsigned integer syntax");
-    }
-    std::size_t used = 0;
-    const auto parsed = stoull(value, &used);
-    if (used != value.size())
-    {
-      throw invalid_argument("trailing characters");
-    }
-    return static_cast<std::size_t>(parsed);
-  }
-  catch (const exception&)
-  {
-    throw runtime_error(string("RedisJobStatus: malformed ") + context);
-  }
-}
+   /** @brief Parses a non-negative snapshot size and reports malformed values with context.
+      * @param value Input value to parse or convert.
+      * @param context Description of the value used in diagnostic errors.
+      * @return Result produced by this helper.
+      */
+   std::size_t parseSnapshotSize(const string& value, const char* context)
+   {
+      try
+      {
+         if (value.empty() ||
+               !std::all_of(value.begin(), value.end(),
+                                    [](unsigned char ch) { return ch >= '0' && ch <= '9'; }))
+         {
+            throw invalid_argument("invalid unsigned integer syntax");
+         }
+         std::size_t used = 0;
+         const auto parsed = stoull(value, &used);
+         if (used != value.size())
+         {
+            throw invalid_argument("trailing characters");
+         }
+         return static_cast<std::size_t>(parsed);
+      }
+      catch (const exception&)
+      {
+         throw runtime_error(string("RedisJobStatus: malformed ") + context);
+      }
+   }
 
-/** @brief Parses the redisJobStatusEnabled configuration value as a boolean. */
-bool parseEnabledFlag(const string& value)
-{
-  string normalized = value;
-  transform(normalized.begin(), normalized.end(), normalized.begin(),
-            [](unsigned char ch)
-            {
-              return static_cast<char>(tolower(ch));
-            });
+   /** @brief Parses the redisJobStatusEnabled configuration value as a boolean.
+      * @param value Input value to parse or convert.
+      * @return Result produced by this helper.
+      */
+   bool parseEnabledFlag(const string& value)
+   {
+      string normalized = value;
+      transform(normalized.begin(), normalized.end(), normalized.begin(),
+                     [](unsigned char ch)
+                     {
+                        return static_cast<char>(tolower(ch));
+                     });
 
-  if (normalized.empty() || normalized == "true" || normalized == "1" || normalized == "yes")
-  {
-    return true;
-  }
-  if (normalized == "false" || normalized == "0" || normalized == "no")
-  {
-    return false;
-  }
-  throw invalid_argument(
-      "RedisJobStatus: redisJobStatusEnabled must be true/false, 1/0, or yes/no");
-}
+      if (normalized.empty() || normalized == "true" || normalized == "1" || normalized == "yes")
+      {
+         return true;
+      }
+      if (normalized == "false" || normalized == "0" || normalized == "no")
+      {
+         return false;
+      }
+      throw invalid_argument(
+            "RedisJobStatus: redisJobStatusEnabled must be true/false, 1/0, or yes/no");
+   }
 
-/** @brief Loads RedisJobStatus settings from the host application's configuration registry. */
-RedisJobStatus::Config defaultConfig()
-{
-  RedisJobStatus::Config config;
-  config.enabled = parseEnabledFlag(get_reg_val("redisJobStatusEnabled"));
-  config.serverType = get_reg_val("redisJobStatusServerType");
-  config.serverId = get_reg_val("redisJobStatusServerId");
-  return config;
-}
+   /** @brief Loads RedisJobStatus settings from the host application's configuration registry.
+      * @return Result produced by this helper.
+      */
+   RedisJobStatus::Config defaultConfig()
+   {
+      RedisJobStatus::Config config;
+      config.enabled = parseEnabledFlag(get_reg_val("redisJobStatusEnabled"));
+      config.serverType = get_reg_val("redisJobStatusServerType");
+      config.serverId = get_reg_val("redisJobStatusServerId");
+      return config;
+   }
 } // namespace
 
 RedisJobStatus::RedisJobStatus(ConfigProvider provider)
@@ -781,81 +852,81 @@ RedisJobStatus::getServerSummaries(const string& serverType)
 
 namespace
 {
-/**
- * @brief Parses a flat Lua job snapshot and verifies every job belongs to the requested server scope.
- * @param flat Flat sequence of job references, field counts, and field/value pairs.
- * @param expectedServerType Required server type for every returned job.
- * @param expectedServerId Optional required server ID; null accepts any server ID of the type.
- * @return Parsed jobs with lifecycle fields separated from user metadata.
- */
-vector<RedisJobStatus::Job> parseJobsSnapshot(
-    const vector<string>& flat,
-    const string& expectedServerType,
-    const string* expectedServerId)
-{
-  if (flat.empty())
-  {
-    throw runtime_error("RedisJobStatus: empty job snapshot");
-  }
-  std::size_t cursor = 0;
-  const auto count = parseSnapshotSize(flat[cursor++], "job record count");
-  if (count > (flat.size() - cursor) / 2)
-  {
-    throw runtime_error("RedisJobStatus: malformed job record count");
-  }
-  vector<RedisJobStatus::Job> jobs;
-  jobs.reserve(count);
-  for (std::size_t i = 0; i < count; ++i)
-  {
-    if (cursor + 2 > flat.size())
-    {
-      throw runtime_error("RedisJobStatus: malformed job record");
-    }
-    const string reference = flat[cursor++];
-    const auto fields = parseSnapshotSize(flat[cursor++], "job field count");
-    if (cursor > flat.size() || fields > (flat.size() - cursor) / 2)
-    {
-      throw runtime_error("RedisJobStatus: truncated job record");
-    }
-    RedisJobStatus::Job job;
-    for (std::size_t j = 0; j < fields; ++j)
-    {
-      const auto& name = flat[cursor++];
-      const auto& value = flat[cursor++];
-      if (name == kJobIdField)
+   /**
+      * @brief Parses a flat Lua job snapshot and verifies every job belongs to the requested server scope.
+      * @param flat Flat sequence of job references, field counts, and field/value pairs.
+      * @param expectedServerType Required server type for every returned job.
+      * @param expectedServerId Optional required server ID; null accepts any server ID of the type.
+      * @return Parsed jobs with lifecycle fields separated from user metadata.
+      */
+   vector<RedisJobStatus::Job> parseJobsSnapshot(
+         const vector<string>& flat,
+         const string& expectedServerType,
+         const string* expectedServerId)
+   {
+      if (flat.empty())
       {
-        job.jobId = value;
+         throw runtime_error("RedisJobStatus: empty job snapshot");
       }
-      else if (name == kStatusField)
+      std::size_t cursor = 0;
+      const auto count = parseSnapshotSize(flat[cursor++], "job record count");
+      if (count > (flat.size() - cursor) / 2)
       {
-        job.status = value;
+         throw runtime_error("RedisJobStatus: malformed job record count");
       }
-      else if (name == kServerTypeField)
+      vector<RedisJobStatus::Job> jobs;
+      jobs.reserve(count);
+      for (std::size_t i = 0; i < count; ++i)
       {
-        job.serverType = value;
+         if (cursor + 2 > flat.size())
+         {
+            throw runtime_error("RedisJobStatus: malformed job record");
+         }
+         const string reference = flat[cursor++];
+         const auto fields = parseSnapshotSize(flat[cursor++], "job field count");
+         if (cursor > flat.size() || fields > (flat.size() - cursor) / 2)
+         {
+            throw runtime_error("RedisJobStatus: truncated job record");
+         }
+         RedisJobStatus::Job job;
+         for (std::size_t j = 0; j < fields; ++j)
+         {
+            const auto& name = flat[cursor++];
+            const auto& value = flat[cursor++];
+            if (name == kJobIdField)
+            {
+               job.jobId = value;
+            }
+            else if (name == kStatusField)
+            {
+               job.status = value;
+            }
+            else if (name == kServerTypeField)
+            {
+               job.serverType = value;
+            }
+            else if (name == kServerIdField)
+            {
+               job.serverId = value;
+            }
+            else
+            {
+               job.fields[name] = value;
+            }
+         }
+         if (job.serverType != expectedServerType ||
+               (expectedServerId && job.serverId != *expectedServerId))
+         {
+            throw runtime_error("RedisJobStatus: foreign job reference in index: " + reference);
+         }
+         jobs.push_back(std::move(job));
       }
-      else if (name == kServerIdField)
+      if (cursor != flat.size())
       {
-        job.serverId = value;
+         throw runtime_error("RedisJobStatus: trailing job snapshot data");
       }
-      else
-      {
-        job.fields[name] = value;
-      }
-    }
-    if (job.serverType != expectedServerType ||
-        (expectedServerId && job.serverId != *expectedServerId))
-    {
-      throw runtime_error("RedisJobStatus: foreign job reference in index: " + reference);
-    }
-    jobs.push_back(std::move(job));
-  }
-  if (cursor != flat.size())
-  {
-    throw runtime_error("RedisJobStatus: trailing job snapshot data");
-  }
-  return jobs;
-}
+      return jobs;
+   }
 } // namespace
 
 vector<RedisJobStatus::Job> RedisJobStatus::getServerJobs(
