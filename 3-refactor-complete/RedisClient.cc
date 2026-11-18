@@ -27,50 +27,50 @@ string get_reg_val(const string& key);
 
 namespace
 {
-/**
- * @brief Parses the Redis Cluster configuration flag, accepting common boolean spellings.
- * @param value Raw configuration value.
- * @return True when Cluster mode is enabled; false when disabled.
- * @throws std::invalid_argument if value is not a recognized boolean spelling.
- */
-bool parseClusterFlag(string value)
-{
-  transform(value.begin(), value.end(), value.begin(),
-                 [](unsigned char ch)
-                 {
-                   return static_cast<char>(tolower(ch));
-                 });
+   /**
+      * @brief Parses the Redis Cluster configuration flag, accepting common boolean spellings.
+      * @param value Raw configuration value.
+      * @return True when Cluster mode is enabled; false when disabled.
+      * @throws std::invalid_argument if value is not a recognized boolean spelling.
+      */
+   bool parseClusterFlag(string value)
+   {
+      transform(value.begin(), value.end(), value.begin(),
+                              [](unsigned char ch)
+                              {
+                                 return static_cast<char>(tolower(ch));
+                              });
 
-  if (value.empty() || value == "false" || value == "0" || value == "no")
-  {
-    return false;
-  }
-  if (value == "true" || value == "1" || value == "yes")
-  {
-    return true;
-  }
+      if (value.empty() || value == "false" || value == "0" || value == "no")
+      {
+         return false;
+      }
+      if (value == "true" || value == "1" || value == "yes")
+      {
+         return true;
+      }
 
-  throw invalid_argument(
-      "RedisClient: isRedisCluster must be true/false, 1/0, or yes/no");
-}
+      throw invalid_argument(
+            "RedisClient: isRedisCluster must be true/false, 1/0, or yes/no");
+   }
 
-/**
- * @brief Loads the Redis URL and Cluster-mode setting from the host configuration registry.
- * @return RedisClient configuration assembled from the registry values.
- * @throws std::invalid_argument if the Redis URL is missing or the Cluster flag is invalid.
- */
-RedisClient::Config defaultConfigProvider()
-{
-  const auto url = get_reg_val("redisUrl");
-  if (url.empty())
-  {
-    throw invalid_argument(
-        "RedisClient: get_reg_val(\"redisUrl\") returned an empty value");
-  }
+   /**
+      * @brief Loads the Redis URL and Cluster-mode setting from the host configuration registry.
+      * @return RedisClient configuration assembled from the registry values.
+      * @throws std::invalid_argument if the Redis URL is missing or the Cluster flag is invalid.
+      */
+   RedisClient::Config defaultConfigProvider()
+   {
+      const auto url = get_reg_val("redisUrl");
+      if (url.empty())
+      {
+         throw invalid_argument(
+               "RedisClient: get_reg_val(\"redisUrl\") returned an empty value");
+      }
 
-  return RedisClient::Config{
-      url, parseClusterFlag(get_reg_val("isRedisCluster"))};
-}
+      return RedisClient::Config{
+            url, parseClusterFlag(get_reg_val("isRedisCluster"))};
+   }
 } // namespace
 
 RedisClient::RedisClient(ConfigProvider provider)
