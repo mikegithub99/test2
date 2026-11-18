@@ -44,21 +44,25 @@ namespace
 #include "RedisJobScripts.inc"
 
 
+/** @brief Builds a collision-safe reference from a server ID and job ID. */
 string jobReference(const string& serverId, const string& jobId)
 {
   return to_string(serverId.size()) + ":" + serverId + ":" + jobId;
 }
 
+/** @brief Builds the Redis hash key for a job in the server-type Cluster slot. */
 string jobKey(const string& serverType, const string& serverId, const string& jobId)
 {
   return "job:{" + serverType + "}:" + jobReference(serverId, jobId);
 }
 
+/** @brief Returns the sorted-set key indexing jobs for a server type. */
 string typeJobsKey(const string& serverType)
 {
   return "jobs:type:{" + serverType + "}";
 }
 
+/** @brief Returns the sorted-set key indexing jobs owned by one server. */
 string serverJobsKey(
     const string& serverType,
     const string& serverId)
@@ -66,11 +70,13 @@ string serverJobsKey(
   return "jobs:server:{" + serverType + "}:" + serverId;
 }
 
+/** @brief Returns the summary hash key for a server type. */
 string typeSummaryKey(const string& serverType)
 {
   return "summary:type:{" + serverType + "}";
 }
 
+/** @brief Returns the summary hash key for one server. */
 string serverSummaryKey(
     const string& serverType,
     const string& serverId)
@@ -78,6 +84,7 @@ string serverSummaryKey(
   return "summary:server:{" + serverType + "}:" + serverId;
 }
 
+/** @brief Returns the registry-slot set key for servers of one type. */
 string serverRegistryKey(const string& serverType)
 {
   return "servers:{registry}:type:" + serverType;
@@ -85,6 +92,7 @@ string serverRegistryKey(const string& serverType)
 
 const string kServerTypesKey = "servers:{registry}:types";
 
+/** @brief Returns the heartbeat key for one server. */
 string heartbeatKey(
     const string& serverType,
     const string& serverId)
@@ -92,11 +100,13 @@ string heartbeatKey(
   return "heartbeat:server:{" + serverType + "}:" + serverId;
 }
 
+/** @brief Returns the live-server set key for a server type. */
 string liveServersKey(const string& serverType)
 {
   return "servers:live:{" + serverType + "}";
 }
 
+/** @brief Returns the lifecycle-state hash key for a server type. */
 string serverStateKey(const string& serverType)
 {
   return "servers:state:{" + serverType + "}";
@@ -105,6 +115,7 @@ string serverStateKey(const string& serverType)
 using KeyList = vector<string>;
 using ArgList = vector<string>;
 
+/** @brief Builds the same-slot Redis keys used by job lifecycle scripts. */
 KeyList lifecycleKeys(
     const string& jobId,
     const string& serverType,
@@ -131,6 +142,7 @@ constexpr const char* kReservedJobMetadataFields[] = {
 constexpr const char* kCreatedAtMetadataField = "createdAt";
 constexpr const char* kCreatedByServerIdMetadataField = "createdByServerId";
 
+/** @brief Reports whether a job metadata field is owned by the lifecycle API. */
 bool isReservedJobMetadataField(const string& field)
 {
   for (const char* reserved : kReservedJobMetadataFields)
@@ -143,18 +155,27 @@ bool isReservedJobMetadataField(const string& field)
   return false;
 }
 
+/** @brief Reports whether a server-type metadata field is internally managed. */
 bool isReservedServerTypeMetadataField(const string& field)
 {
   return field == kCreatedAtMetadataField ||
          field == kCreatedByServerIdMetadataField;
 }
 
+/** @brief Reports whether a server metadata field is internally managed. */
 bool isReservedServerMetadataField(const string& field)
 {
   return field == "registeredAt";
 }
 
 // Appends a count and accepted field/value pairs in the Lua argument format.
+/**
+ * @brief Appends filtered metadata fields in the argument format expected by Lua scripts.
+ * @tparam IncludeField Predicate deciding whether each metadata field is included.
+ * @param args Destination Lua argument list; receives a count followed by field/value pairs.
+ * @param metadata Metadata fields to append.
+ * @param includeField Predicate applied to each field name.
+ */
 template <typename IncludeField>
 void appendMetadataArgs(
     ArgList& args,
@@ -179,6 +200,15 @@ void appendMetadataArgs(
   args[countIndex] = to_string(count);
 }
 
+/**
+ * @brief Evaluates a Redis Lua script and converts its result to a 64-bit integer.
+ * @tparam Redis Redis client or connection type providing the eval interface.
+ * @param redis Redis connection used to execute the script.
+ * @param script Lua script source.
+ * @param keys Redis keys supplied as KEYS.
+ * @param args Arguments supplied as ARGV.
+ * @return Integer result returned by the script.
+ */
 template <typename Redis>
 int64_t evalResult(
     Redis& redis,
@@ -190,6 +220,15 @@ int64_t evalResult(
       script, keys.begin(), keys.end(), args.begin(), args.end());
 }
 
+/**
+ * @brief Evaluates a lifecycle script after prepending counter-validation logic.
+ * @tparam Redis Redis client or connection type providing the eval interface.
+ * @param redis Redis connection used to execute the script.
+ * @param script Lifecycle Lua script source.
+ * @param keys Redis keys supplied as KEYS.
+ * @param args Arguments supplied as ARGV.
+ * @return Integer result returned by the script.
+ */
 template <typename Redis>
 int64_t evalCounterResult(
     Redis& redis,
@@ -202,6 +241,15 @@ int64_t evalCounterResult(
 }
 
 
+/**
+ * @brief Evaluates a Redis Lua script and converts its result to a string vector.
+ * @tparam Redis Redis client or connection type providing the eval interface.
+ * @param redis Redis connection used to execute the script.
+ * @param script Lua script source.
+ * @param keys Redis keys supplied as KEYS.
+ * @param args Arguments supplied as ARGV.
+ * @return String values returned by the script.
+ */
 template <typename Redis>
 vector<string> evalStrings(Redis& redis, const string& script,
                            const KeyList& keys, const ArgList& args)
@@ -210,6 +258,7 @@ vector<string> evalStrings(Redis& redis, const string& script,
       script, keys.begin(), keys.end(), args.begin(), args.end());
 }
 
+/** @brief Parses a non-negative decimal counter, rejecting malformed or overflowing values. */
 int64_t parseCounter(const string& value, const string& name)
 {
   try
@@ -235,6 +284,7 @@ int64_t parseCounter(const string& value, const string& name)
   }
 }
 
+/** @brief Extracts numeric counters from a flat field/value snapshot, excluding metadata. */
 map<string, int64_t> countersFromSnapshot(
     const vector<string>& flat, std::size_t offset, std::size_t fieldCount)
 {
@@ -258,6 +308,7 @@ map<string, int64_t> countersFromSnapshot(
 
 std::size_t parseSnapshotSize(const string& value, const char* context);
 
+/** @brief Parses and validates the flat Lua response containing server summaries. */
 vector<RedisJobStatus::ServerSummary> parseServerSummariesSnapshot(
     const vector<string>& flat)
 {
@@ -297,6 +348,13 @@ vector<RedisJobStatus::ServerSummary> parseServerSummariesSnapshot(
   return summaries;
 }
 
+/**
+ * @brief Reads numeric counters from a Redis summary hash, excluding metadata fields.
+ * @tparam Redis Redis client or connection type providing the hgetall interface.
+ * @param redis Redis connection used to read the hash.
+ * @param key Redis summary hash key.
+ * @return Map of counter names to their parsed values.
+ */
 template <typename Redis>
 map<string, int64_t> readCounters(
     Redis& redis,
@@ -319,6 +377,7 @@ map<string, int64_t> readCounters(
   return counters;
 }
 
+/** @brief Parses a non-negative snapshot size and reports malformed values with context. */
 std::size_t parseSnapshotSize(const string& value, const char* context)
 {
   try
@@ -343,6 +402,7 @@ std::size_t parseSnapshotSize(const string& value, const char* context)
   }
 }
 
+/** @brief Parses the redisJobStatusEnabled configuration value as a boolean. */
 bool parseEnabledFlag(const string& value)
 {
   string normalized = value;
@@ -364,6 +424,7 @@ bool parseEnabledFlag(const string& value)
       "RedisJobStatus: redisJobStatusEnabled must be true/false, 1/0, or yes/no");
 }
 
+/** @brief Loads RedisJobStatus settings from the host application's configuration registry. */
 RedisJobStatus::Config defaultConfig()
 {
   RedisJobStatus::Config config;
@@ -720,6 +781,13 @@ RedisJobStatus::getServerSummaries(const string& serverType)
 
 namespace
 {
+/**
+ * @brief Parses a flat Lua job snapshot and verifies every job belongs to the requested server scope.
+ * @param flat Flat sequence of job references, field counts, and field/value pairs.
+ * @param expectedServerType Required server type for every returned job.
+ * @param expectedServerId Optional required server ID; null accepts any server ID of the type.
+ * @return Parsed jobs with lifecycle fields separated from user metadata.
+ */
 vector<RedisJobStatus::Job> parseJobsSnapshot(
     const vector<string>& flat,
     const string& expectedServerType,
