@@ -1,7 +1,7 @@
 /**
- * @file RedisClient.cc
- * @brief Implementation of RedisClient configuration and lazy singleton.
- */
+   * @file RedisClient.cc
+   * @brief Implementation of RedisClient configuration and lazy singleton.
+   */
 
 #include "RedisClient.h"
 
@@ -75,27 +75,27 @@ namespace
 
 RedisClient::RedisClient(ConfigProvider provider)
 {
-  const Config config = provider ? provider() : defaultConfigProvider();
-  if (config.redisUrl.empty())
-  {
-    throw invalid_argument("RedisClient: redisUrl is empty");
-  }
+   const Config config = provider ? provider() : defaultConfigProvider();
+   if (config.redisUrl.empty())
+   {
+      throw invalid_argument("RedisClient: redisUrl is empty");
+   }
 
-  if (config.isCluster)
-  {
-    m_client.emplace<unique_ptr<RedisCluster>>(
-        make_unique<RedisCluster>(config.redisUrl));
-  }
-  else
-  {
-    m_client.emplace<unique_ptr<Redis>>(
-        make_unique<Redis>(config.redisUrl));
-  }
+   if (config.isCluster)
+   {
+      m_client.emplace<unique_ptr<RedisCluster>>(
+            make_unique<RedisCluster>(config.redisUrl));
+   }
+   else
+   {
+      m_client.emplace<unique_ptr<Redis>>(
+            make_unique<Redis>(config.redisUrl));
+   }
 }
 
 shared_ptr<RedisClient> RedisClient::Instance(ConfigProvider provider)
 {
-  static const shared_ptr<RedisClient> instance(
-      new RedisClient(move(provider)));
-  return instance;
+   static const shared_ptr<RedisClient> instance(
+         new RedisClient(move(provider)));
+   return instance;
 }
