@@ -10,6 +10,7 @@
 #include "RedisJobScripts.inc"
 
 #include <iostream>
+#include <initializer_list>
 #include <iterator>
 #include <random>
 #include <sstream>
@@ -25,12 +26,43 @@ using std::vector;
 
 namespace
 {
-enum class LeaseAcquireResult : std::int64_t { AlreadyOwned = 0, Acquired = 1 };
-enum class LeaseRenewResult : std::int64_t { Lost = 0, Renewed = 1 };
-enum class LeaseReleaseResult : std::int64_t { NotOwned = 0, Released = 1 };
-enum class FenceResult : std::int64_t { NotEligible = 0, Fenced = 1, AlreadyCleaned = 2 };
-enum class CleanupResult : std::int64_t { NotCleaned = 0, Cleaned = 1, AlreadyCleaned = 2 };
-enum class TombstoneCollectionResult : std::int64_t { NotCollected = 0, Collected = 1 };
+enum class LeaseAcquireResult : std::int64_t
+{
+  NotAcquired = 0,
+  Acquired = 1
+};
+
+enum class LeaseRenewResult : std::int64_t
+{
+  Lost = 0,
+  Renewed = 1
+};
+
+enum class LeaseReleaseResult : std::int64_t
+{
+  NotOwned = 0,
+  Released = 1
+};
+
+enum class FenceResult : std::int64_t
+{
+  NotEligible = 0,
+  Fenced = 1,
+  AlreadyCleaned = 2
+};
+
+enum class CleanupResult : std::int64_t
+{
+  NotCleaned = 0,
+  Cleaned = 1,
+  AlreadyCleaned = 2
+};
+
+enum class TombstoneCollectionResult : std::int64_t
+{
+  NotCollected = 0,
+  Collected = 1
+};
 
 template <typename Enum>
 Enum checkedResult(std::int64_t value, std::initializer_list<std::pair<std::int64_t, Enum>> values,
@@ -306,7 +338,7 @@ void RedisHeartbeatManager::scanOnce()
       {
         const auto acquired = checkedResult<LeaseAcquireResult>(
             evalScript(redis, kAcquireCleanupLeaseScript, leaseKeys, acquireArgs),
-            {{0, LeaseAcquireResult::AlreadyOwned}, {1, LeaseAcquireResult::Acquired}},
+            {{0, LeaseAcquireResult::NotAcquired}, {1, LeaseAcquireResult::Acquired}},
             "lease acquisition");
         if (acquired == LeaseAcquireResult::AlreadyOwned)
         {
