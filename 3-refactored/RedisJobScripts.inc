@@ -315,26 +315,10 @@ redis.call('DEL', jobKey)
 return RESULT_OK
 )lua";
 
-/**
- * @brief Adds a server type to global discovery and an instance to that type.
- *
- * KEYS[1] is the global server-type set and KEYS[2] is the current type's
- * server-ID set. Both keys must use the {registry} Redis Cluster hash tag.
- * ARGV[1] is serverType and ARGV[2] is serverId.
- *
- * Returns 0 if the ID is already registered for this type, otherwise 1.
- * Returns a Redis error reply before writing if either key has the wrong type.
- */
-/**
- * @brief Initializes server-type metadata without overwriting existing values.
- *
- * KEYS[1] is the type summary hash. ARGV[1] is the UTC creation timestamp,
- * ARGV[2] is the server ID that first created the type, ARGV[3] is metadata
- * pair count, and remaining args are field/value pairs.
- */
-// Per-type registration. All three keys share the {serverType} hash tag.
-// Type metadata, server metadata, registeredAt, and ACTIVE are committed by
-// one execution so a crash cannot leave these per-type registration steps split.
+// Initializes type/server metadata and activates one server in the {serverType} slot.
+// KEYS: type summary, server summary, server-state hash.
+// ARGV: server ID, caller timestamp, type metadata count/pairs, server metadata count/pairs.
+// Returns 0 when the ID already has lifecycle state, 1 when activated; validation failures are Redis errors.
 const char* const kRegisterAndActivateServerScript = R"lua(
 local typeSummaryKey = KEYS[1]
 local serverSummaryKey = KEYS[2]
@@ -400,6 +384,10 @@ redis.call('HSET', stateKey, serverId, 'ACTIVE')
 return 1
 )lua";
 
+// Adds a server type and server ID to the registry sets in the {registry} slot.
+// KEYS: global server-type set, current type's server-ID set.
+// ARGV: server type, server ID. Returns 0 when already registered, 1 when added.
+// Key-type and key-layout violations are Redis errors; validation precedes both writes.
 const char* const kRegisterServerScript = R"lua(
 local serverTypesKey = KEYS[1]
 local currentTypeKey = KEYS[2]
