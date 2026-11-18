@@ -477,7 +477,7 @@ RedisJobStatus::Result RedisJobStatus::transitionJob(
   {
     return evalCounterResult(redis, kTransitionScript, keys, args);
   });
-  return static_cast<Result>(result);
+  return resultFromScript(result);
 }
 
 RedisJobStatus::Result RedisJobStatus::completeJob(const string& jobId)
