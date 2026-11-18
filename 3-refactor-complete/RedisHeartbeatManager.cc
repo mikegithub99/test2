@@ -65,6 +65,15 @@ enum class TombstoneCollectionResult : std::int64_t
   Collected = 1
 };
 
+/**
+ * @brief Converts a numeric Lua result to its corresponding strongly typed outcome.
+ * @tparam Enum Result enum type.
+ * @param value Numeric result returned by the Lua script.
+ * @param values Supported numeric-to-enum mappings.
+ * @param operation Operation name included in unexpected-result errors.
+ * @return The enum value matching value.
+ * @throws std::runtime_error if value is not present in values.
+ */
 template <typename Enum>
 Enum checkedResult(std::int64_t value, std::initializer_list<std::pair<std::int64_t, Enum>> values,
                    const char* operation)
@@ -179,6 +188,16 @@ int64_t evalScript(
       script, keys.begin(), keys.end(), args.begin(), args.end());
 }
 
+/**
+ * @brief Fences and cleans one expired registered server, renewing the lease as needed.
+ * @tparam Redis Redis connection type providing the required Redis++ commands.
+ * @tparam Renew Callable that renews the distributed cleanup lease when necessary.
+ * @param redis Redis connection used for the cleanup operations.
+ * @param type Server type that owns the server.
+ * @param id Server ID being cleaned.
+ * @param config Cleanup timing and retention configuration.
+ * @param renewIfNeeded Lease-renewal callback invoked before potentially long operations.
+ */
 template <typename Redis, typename Renew>
 void cleanupRegisteredServer(
     Redis& redis,
@@ -246,6 +265,15 @@ void cleanupRegisteredServer(
   }
 }
 
+/**
+ * @brief Indexes retirement tombstones and collects those past the configured retention period.
+ * @tparam Redis Redis connection type providing the required Redis++ commands.
+ * @tparam Renew Callable that renews the distributed cleanup lease when necessary.
+ * @param redis Redis connection used for indexing and collection.
+ * @param type Server type whose retired-server index is processed.
+ * @param config Cleanup timing and retention configuration.
+ * @param renewIfNeeded Lease-renewal callback invoked during the scan.
+ */
 template <typename Redis, typename Renew>
 void collectRetiredServers(
     Redis& redis,
@@ -298,6 +326,13 @@ void collectRetiredServers(
   }
 }
 
+/**
+ * @brief Acquires the distributed cleanup lease and performs a complete registry scan.
+ * @tparam Redis Redis connection type providing the required Redis++ commands.
+ * @param redis Redis connection used for the scan.
+ * @param config Cleanup timing and retention configuration.
+ * @param token Unique ownership token for the cleanup lease.
+ */
 template <typename Redis>
 void runCleanupScan(
     Redis& redis,
