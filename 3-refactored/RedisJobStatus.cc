@@ -494,7 +494,7 @@ RedisJobStatus::Result RedisJobStatus::completeJob(const string& jobId)
   {
     return evalCounterResult(redis, kCompleteScript, keys, args);
   });
-  return static_cast<Result>(result);
+  return resultFromScript(result);
 }
 
 void RedisJobStatus::registerServer(
