@@ -367,7 +367,14 @@ void runCleanupScan(
   }
   catch (...)
   {
-    try { release(); } catch (...) {}
+    try
+    {
+      release();
+    }
+    catch (...)
+    {
+      // Preserve the original scan failure if lease release also fails.
+    }
     throw;
   }
   release();
@@ -451,7 +458,10 @@ void RedisHeartbeatManager::HeartbeatStart()
 }
 
 /**
- * @brief Signals the cleanup loop to stop and waits for its thread to finish.
+ * @brief Stops and joins the cleanup thread.
+ *
+ * The heartbeat publisher has an independent lifetime and is stopped when
+ * the manager is destroyed.
  */
 void RedisHeartbeatManager::stop()
 {
