@@ -17,22 +17,22 @@ int runWorkerApplication();
 
 int main()
 {
-  initializeConfiguration();
+   initializeConfiguration();
 
-  // The singleton is the public construction path; use this same instance
-  // for registration and all job lifecycle operations in this process.
-  const auto status = RedisJobStatus::Instance();
-  status->registerServer(
-      std::map<std::string, std::string>{}, // server-type metadata
-      std::map<std::string, std::string>{}  // server-instance metadata
-  );
+   // The singleton is the public construction path; use this same instance
+   // for registration and all job lifecycle operations in this process.
+   const auto status = RedisJobStatus::Instance();
+   status->registerServer(
+         std::map<std::string, std::string>{}, // server-type metadata
+         std::map<std::string, std::string>{}  // server-instance metadata
+   );
 
-  // Instance() starts the process-local cleanup thread. HeartbeatStart()
-  // starts the publisher using RedisJobStatus::Instance().
-  const auto heartbeatManager = RedisHeartbeatManager::Instance();
-  heartbeatManager->HeartbeatStart();
+   // Instance() starts the process-local cleanup thread. HeartbeatStart()
+   // starts the publisher using RedisJobStatus::Instance().
+   const auto heartbeatManager = RedisHeartbeatManager::Instance();
+   heartbeatManager->HeartbeatStart();
 
-  // Keep the process alive while it serves work. Static process-wide
-  // services are destroyed during orderly process shutdown.
-  return runWorkerApplication();
+   // Keep the process alive while it serves work. Static process-wide
+   // services are destroyed during orderly process shutdown.
+   return runWorkerApplication();
 }
