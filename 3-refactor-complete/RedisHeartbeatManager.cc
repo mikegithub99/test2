@@ -434,9 +434,9 @@ std::shared_ptr<RedisHeartbeatManager> RedisHeartbeatManager::Instance(
 }
 
 /**
- * @brief Starts the process-wide heartbeat publisher exactly once.
- * @param status Shared worker status to retain and refresh.
- * @throws std::invalid_argument if status is null.
+ * @brief Starts the process-wide heartbeat publisher once.
+ *
+ * Uses the configured RedisJobStatus singleton and manager heartbeat timings.
  */
 void RedisHeartbeatManager::HeartbeatStart()
 {
