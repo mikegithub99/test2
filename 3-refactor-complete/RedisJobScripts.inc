@@ -1,36 +1,14 @@
 /**
  * @file RedisJobScripts.inc
- * @brief Embedded Lua scripts for RedisJobStatus.
+ * @brief Redis Lua contracts shared by the job-status and heartbeat components.
  *
- * This file is included by RedisJobStatus.cc and RedisHeartbeatManager.cc.
- * Each translation unit includes it in its own implementation scope. Script
- * bodies are C++ raw string literals so they ship with the executable
- * without a generator or runtime script-file lookup.
- *
- * Lua features used by these scripts:
- * - `local` and `function` for scoped variables and helper functions.
- * - `if`, `and`, `or`, and `not` for validation and state checks.
- * - `for`, `#`, and `table.insert` to collect optional field/value pairs.
- * - Tables and `unpack` to pass a variable-length HSET argument list.
- * - `string.lower` and `tonumber` to normalize and validate counters.
- * - `KEYS[n]` and `ARGV[n]` at the start of each script to assign descriptive
- *   local names to the explicit keys and arguments supplied by the C++ caller;
- *   Lua tables are one-indexed.
- * - `redis.call` to execute Redis commands and `return` to report results.
- *
- * Redis executes each script atomically with respect to other commands, but
- * scripts do not provide general rollback after a runtime error. Validate
- * key types and state before writing, and keep scripts short.
+ * Each script is passed to Redis EVAL with an explicit KEYS list and ARGV list.
+ * Keep key order, argument order, return codes, and executable statements in
+ * sync with the C++ callers. Redis scripts are atomic relative to other
+ * commands, but runtime errors do not roll back writes already performed.
  */
 
-// -----------------------------------------------------------------------------
-// Shared Lua helper preludes
-//
-// These functions are prepended to individual scripts before Redis EVAL.
-// Keep helpers here when they are shared by multiple scripts.
-// -----------------------------------------------------------------------------
-
-// Counter preflight functions prepended to each counter-mutating script.
+// Shared validation helpers prepended to counter-mutating scripts.
 const char* const kCounterValidationPrelude = R"lua(
 local function counterValid(key, field, delta, requirePositive)
   local raw = redis.call('HGET', key, field) or '0'
@@ -51,15 +29,11 @@ end
 
 
 /**
- * @brief Creates a PENDING job and updates its indexes and summary counters.
- *
- * KEYS[1..5] are assigned to jobKey, typeJobsKey, serverJobsKey,
- * typeSummaryKey, and serverSummaryKey, respectively.
- * ARGV[1..4] are jobId, serverType, serverId, and composite reference.
- * ARGV[5] is job-field count. Remaining arguments are job field/value pairs.
- *
- * Returns RESULT_OK (0), RESULT_ALREADY_EXISTS (5), or
- * RESULT_DATA_INCONSISTENT (4).
+ * Creates a PENDING job and updates its indexes and counters.
+ * KEYS: job hash, type job set, server job set, type summary, server summary,
+ * server-state hash. ARGV: job ID, type, server ID, composite reference,
+ * metadata pair count, then metadata field/value pairs.
+ * Returns 0 success, 5 duplicate job, 4 inconsistent data, or 7 inactive server.
  */
 const char* const kCreatePendingScript = R"lua(
 
@@ -140,14 +114,11 @@ return RESULT_OK
 )lua";
 
 /**
- * @brief Moves a job between supported lifecycle states and updates counters.
- *
- * jobKey job hash; typeJobsKey type job-ID set; serverJobsKey server job-ID set;
- * typeSummaryKey type summary hash; serverSummaryKey server summary hash.
- * ARGV[1..5] are jobId, serverType, serverId, target state, and composite reference.
- *
- * Returns RESULT_OK (0), RESULT_NO_OP (1), RESULT_NOT_FOUND (2),
- * RESULT_INVALID_TRANSITION (3), or RESULT_DATA_INCONSISTENT (4).
+ * Transitions a job and updates its indexes and counters.
+ * KEYS: job hash, type job set, server job set, type summary, server summary,
+ * server-state hash. ARGV: job ID, type, server ID, target state, composite reference.
+ * Returns 0 success, 1 no-op, 2 missing job, 3 invalid transition,
+ * 4 inconsistent data, or 7 inactive server.
  */
 const char* const kTransitionScript = R"lua(
 
@@ -234,14 +205,10 @@ return RESULT_OK
 )lua";
 
 /**
- * @brief Removes a job and decrements its state and total counters.
- *
- * jobKey job hash; typeJobsKey type job-ID set; serverJobsKey server job-ID set;
- * typeSummaryKey type summary hash; serverSummaryKey server summary hash.
- * ARGV[1..4] are jobId, serverType, serverId, and composite reference.
- *
- * Returns RESULT_OK (0), RESULT_NOT_FOUND (2), or
- * RESULT_DATA_INCONSISTENT (4).
+ * Completes a job and decrements its state and total counters.
+ * KEYS: job hash, type job set, server job set, type summary, server summary,
+ * server-state hash. ARGV: job ID, type, server ID, composite reference.
+ * Returns 0 success, 2 missing job, 4 inconsistent data, or 7 inactive server.
  */
 const char* const kCompleteScript = R"lua(
 
@@ -423,7 +390,9 @@ return 1
 
 
 
-// Heartbeat refresh and live-set publication are one atomic per-type action.
+// Refreshes one server's heartbeat and live-set membership atomically.
+// KEYS: heartbeat key, live-server set, lifecycle-state hash.
+// ARGV: server ID, heartbeat TTL in seconds. Returns 1 on refresh, 0 if not ACTIVE.
 const char* const kRefreshHeartbeatScript = R"lua(
 local heartbeatKey = KEYS[1]
 local liveKey = KEYS[2]
@@ -442,14 +411,10 @@ return 1
 )lua";
 
 
-// ---------------------------------------------------------------------------
-// RedisHeartbeatManager scripts. Kept in this shared include alongside the
-// job lifecycle and heartbeat-refresh scripts so all Lua remains in one file.
-// Fence KEYS: heartbeat, state hash, server jobs set, server summary hash,
-// live set, retired-server sorted set. ARGV[1]: serverId;
-// ARGV[2]: first-heartbeat startup timeout in milliseconds.
-// Returns 0=not expired/not eligible, 1=fenced/already fenced,
-// 2=Phase A already completed.
+// Stale-server fencing.
+// KEYS: heartbeat, state hash, server jobs, server summary, live set, retired index.
+// ARGV: server ID, first-heartbeat grace period in milliseconds.
+// Returns 0 if not eligible, 1 if fenced, 2 if fencing already completed.
 // ---------------------------------------------------------------------------
 
 const char* const kFenceExpiredServerScript = R"lua(
@@ -512,10 +477,10 @@ redis.call('ZADD', retired, tostring(redisTimeMs()), ARGV[1])
 return 1
 )lua";
 
-// Cleanup KEYS[1..7]: live set, state hash, heartbeat, server jobs set,
-// type jobs set, server summary hash, type summary hash. KEYS[8..] are the
-// candidate job hashes in the same order as ARGV[3..]. ARGV[1]=serverId,
-// ARGV[2]=job count, ARGV[3..2+count]=composite refs, ARGV[3+count]=type.
+// Removes a fenced server and its jobs.
+// KEYS[1..7]: live set, state hash, heartbeat, server jobs, type jobs,
+// server summary, type summary; KEYS[8..] are candidate job hashes.
+// ARGV: server ID, job count, composite references, server type.
 const char* const kCleanupExpiredServerScript = R"lua(
 local live = KEYS[1]
 local state = KEYS[2]
@@ -647,7 +612,7 @@ return 1
 )lua";
 
 
-// Best-effort dashboard job snapshots. All declared keys share {serverType}.
+// Reads a best-effort job snapshot. All declared keys share {serverType}.
 //
 // KEYS[1] is the server- or type-wide job index; KEYS[2..] are job hashes
 // corresponding to the references C++ enumerated before invoking this script.
@@ -691,8 +656,8 @@ out[1] = tostring(returned)
 return out
 )lua";
 
-// Summary snapshot: KEYS[1..] are summary hashes; ARGV[1..] are server IDs.
-// Missing hashes are omitted. The entire read is one per-type Lua execution.
+// Reads server summaries: KEYS are summary hashes and ARGV are server IDs.
+// Missing hashes are omitted; the read runs in one per-type Lua execution.
 const char* const kReadServerSummariesSnapshotScript = R"lua(
 -- KEYS[1] is a per-type routing key, allowing empty ID lists in Cluster.
 if #KEYS ~= #ARGV + 1 then
@@ -721,7 +686,8 @@ end
 return out
 )lua";
 
-// Registry-slot distributed cleanup scan lease scripts.
+// Cleanup lease scripts use the registry slot.
+
 const char* const kAcquireCleanupLeaseScript = R"lua(
 local key = KEYS[1]
 local t = redis.call('TYPE', key).ok
@@ -746,8 +712,8 @@ return redis.call('DEL', key)
 )lua";
 
 
-// Backfill tombstones created before the retired sorted set was deployed.
-// HSCAN is incremental; ZADD NX preserves any existing original retirement time.
+// Indexes state-hash tombstones in the retired sorted set. HSCAN is incremental;
+// ZADD NX preserves the first recorded retirement timestamp.
 const char* const kIndexUntrackedTombstonesScript = R"lua(
 local state = KEYS[1]
 local retired = KEYS[2]
@@ -776,7 +742,7 @@ end
 return result[1]
 )lua";
 
-// Phase C candidate discovery uses Redis TIME to avoid host clock skew.
+// Lists tombstones whose retention period has elapsed, using Redis TIME.
 const char* const kListExpiredServerTombstonesScript = R"lua(
 local retired = KEYS[1]
 local t = redis.call('TYPE', retired).ok
@@ -792,8 +758,8 @@ local nowMs = tonumber(now[1]) * 1000 + math.floor(tonumber(now[2]) / 1000)
 return redis.call('ZRANGEBYSCORE', retired, '-inf', tostring(nowMs - retentionMs))
 )lua";
 
-// Phase C is per-type. The caller confirms registry absence separately because
-// registry and lifecycle keys occupy different Redis Cluster slots.
+// Collects one expired tombstone in the per-type slot. The caller checks
+// registry absence separately because registry and lifecycle keys use different slots.
 const char* const kCollectRetiredServerTombstoneScript = R"lua(
 local state = KEYS[1]
 local heartbeat = KEYS[2]
