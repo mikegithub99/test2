@@ -1,7 +1,7 @@
 /**
-   * @file HeartbeatRunner.cc
-   * @brief Implements the background worker heartbeat publisher.
-   */
+ * @file HeartbeatRunner.cc
+ * @brief Implements the background worker heartbeat publisher.
+ */
 
 #include "HeartbeatRunner.h"
 
@@ -13,11 +13,11 @@
 #include <utility>
 
 /**
-   * @brief Creates the runner and starts its background thread.
-   * @param status Worker status whose heartbeat is published.
-   * @param heartbeatTtlSeconds TTL applied to each heartbeat refresh.
-   * @param heartbeatRefreshIntervalSeconds Delay between refresh attempts.
-   */
+ * @brief Creates the runner and starts its background thread.
+ * @param status Worker status whose heartbeat is published.
+ * @param heartbeatTtlSeconds TTL applied to each heartbeat refresh.
+ * @param heartbeatRefreshIntervalSeconds Delay between refresh attempts.
+ */
 HeartbeatRunner::HeartbeatRunner(
       std::shared_ptr<RedisJobStatus> status,
       std::int64_t heartbeatTtlSeconds,

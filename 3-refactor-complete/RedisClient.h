@@ -26,47 +26,47 @@
  */
 class RedisClient final
 {
-public:
-  struct Config
-  {
-    std::string redisUrl;
-    bool isCluster = false;
-  };
+ public:
+   struct Config
+   {
+      std::string redisUrl;
+      bool isCluster = false;
+   };
 
-  using ConfigProvider = std::function<Config()>;
-  using Client = std::variant<
-      std::unique_ptr<sw::redis::Redis>,
-      std::unique_ptr<sw::redis::RedisCluster>>;
+   using ConfigProvider = std::function<Config()>;
+   using Client = std::variant<
+         std::unique_ptr<sw::redis::Redis>,
+         std::unique_ptr<sw::redis::RedisCluster>>;
 
-  /**
-   * @brief Gets the process-wide client wrapper, initializing it lazily.
-   * @param provider Optional configuration provider. If omitted, the default
-   *        provider reads redisUrl and isRedisCluster through get_reg_val().
-   *        A supplied provider must be passed on the first call.
-   */
-  static std::shared_ptr<RedisClient> Instance(ConfigProvider provider = {});
+   /**
+    * @brief Gets the process-wide client wrapper, initializing it lazily.
+    * @param provider Optional configuration provider. If omitted, the default
+    *        provider reads redisUrl and isRedisCluster through get_reg_val().
+    *        A supplied provider must be passed on the first call.
+    */
+   static std::shared_ptr<RedisClient> Instance(ConfigProvider provider = {});
 
-  RedisClient(const RedisClient&) = delete;
-  RedisClient& operator=(const RedisClient&) = delete;
+   RedisClient(const RedisClient&) = delete;
+   RedisClient& operator=(const RedisClient&) = delete;
 
-  /**
-   * @brief Invokes a callable with the active sw::redis::Redis or sw::redis::Redis Cluster client.
-   * @tparam Fn Callable accepting either concrete client reference.
-   */
-  template <typename Fn>
-  decltype(auto) execute(Fn&& fn)
-  {
-    return std::visit(
-        [&fn](auto& client) -> decltype(auto)
-        {
-          return std::forward<Fn>(fn)(*client);
-        },
-        m_client);
-  }
+   /**
+    * @brief Invokes a callable with the active sw::redis::Redis or sw::redis::Redis Cluster client.
+    * @tparam Fn Callable accepting either concrete client reference.
+    */
+   template <typename Fn>
+   decltype(auto) execute(Fn&& fn)
+   {
+      return std::visit(
+            [&fn](auto& client) -> decltype(auto)
+            {
+               return std::forward<Fn>(fn)(*client);
+            },
+            m_client);
+   }
 
-private:
-  explicit RedisClient(ConfigProvider provider = {});
-  Client m_client;
+ private:
+   explicit RedisClient(ConfigProvider provider = {});
+   Client m_client;
 };
 
 #endif // REDIS_CLIENT_H

@@ -1,7 +1,7 @@
 /**
-   * @file RedisHeartbeatManager.cc
-   * @brief Implements worker heartbeat publication and distributed cleanup.
-   */
+ * @file RedisHeartbeatManager.cc
+ * @brief Implements worker heartbeat publication and distributed cleanup.
+ */
 
 #include "RedisHeartbeatManager.h"
 
@@ -66,128 +66,129 @@ namespace
    };
 
    /**
-      * @brief Converts a numeric Lua result to its corresponding strongly typed outcome.
-      * @tparam Enum Result enum type.
-      * @param value Numeric result returned by the Lua script.
-      * @param values Supported numeric-to-enum mappings.
-      * @param operation Operation name included in unexpected-result errors.
-      * @return The enum value matching value.
-      * @throws std::runtime_error if value is not present in values.
-      */
+    * @brief Converts a numeric Lua result to its corresponding strongly typed outcome.
+    * @tparam Enum Result enum type.
+    * @param value Numeric result returned by the Lua script.
+    * @param values Supported numeric-to-enum mappings.
+    * @param operation Operation name included in unexpected-result errors.
+    * @return The enum value matching value.
+    * @throws std::runtime_error if value is not present in values.
+    */
    template <typename Enum>
    Enum checkedResult(std::int64_t value, std::initializer_list<std::pair<std::int64_t, Enum>> values,
                                  const char* operation)
    {
       for (const auto& entry : values)
-         if (entry.first == value) return entry.second;
+         if (entry.first == value)
+            return entry.second;
       throw std::runtime_error(std::string("RedisHeartbeatManager: unexpected ") +
                                              operation + " result " + std::to_string(value));
    }
 
    /** @brief Returns the global Redis set containing registered server types.
-      * @return Result produced by this helper.
-      */
+    * @return Result produced by this helper.
+    */
    string registryTypesKey()
    {
       return "servers:{registry}:types";
    }
 
    /** @brief Returns the registry set containing server IDs for one type.
-      * @param type Server type used to construct Redis keys or select servers.
-      * @return Result produced by this helper.
-      */
+    * @param type Server type used to construct Redis keys or select servers.
+    * @return Result produced by this helper.
+    */
    string registryServersKey(const string& type)
    {
       return "servers:{registry}:type:" + type;
    }
 
    /** @brief Returns the Redis key used for the distributed cleanup lease.
-      * @return Result produced by this helper.
-      */
+    * @return Result produced by this helper.
+    */
    string cleanupLeaseKey()
    {
       return "servers:{registry}:cleanup-lease";
    }
 
    /** @brief Returns the live-server set for a server type.
-      * @param type Server type used to construct Redis keys or select servers.
-      * @return Result produced by this helper.
-      */
+    * @param type Server type used to construct Redis keys or select servers.
+    * @return Result produced by this helper.
+    */
    string liveKey(const string& type)
    {
       return "servers:live:{" + type + "}";
    }
 
    /** @brief Returns the lifecycle-state hash for a server type.
-      * @param type Server type used to construct Redis keys or select servers.
-      * @return Result produced by this helper.
-      */
+    * @param type Server type used to construct Redis keys or select servers.
+    * @return Result produced by this helper.
+    */
    string stateKey(const string& type)
    {
       return "servers:state:{" + type + "}";
    }
 
    /** @brief Returns the per-type sorted set indexing retired server IDs.
-      * @param type Server type used to construct Redis keys or select servers.
-      * @return Result produced by this helper.
-      */
+    * @param type Server type used to construct Redis keys or select servers.
+    * @return Result produced by this helper.
+    */
    string retiredServersKey(const string& type)
    {
       return "servers:retired:{" + type + "}";
    }
 
    /** @brief Returns the heartbeat key for one server.
-      * @param type Server type used to construct Redis keys or select servers.
-      * @param id Server identifier.
-      * @return Result produced by this helper.
-      */
+    * @param type Server type used to construct Redis keys or select servers.
+    * @param id Server identifier.
+    * @return Result produced by this helper.
+    */
    string heartbeatKey(const string& type, const string& id)
    {
       return "heartbeat:server:{" + type + "}:" + id;
    }
 
    /** @brief Returns the server's job-reference set.
-      * @param type Server type used to construct Redis keys or select servers.
-      * @param id Server identifier.
-      * @return Result produced by this helper.
-      */
+    * @param type Server type used to construct Redis keys or select servers.
+    * @param id Server identifier.
+    * @return Result produced by this helper.
+    */
    string serverJobsKey(const string& type, const string& id)
    {
       return "jobs:server:{" + type + "}:" + id;
    }
 
    /** @brief Returns the job-reference set for a server type.
-      * @param type Server type used to construct Redis keys or select servers.
-      * @return Result produced by this helper.
-      */
+    * @param type Server type used to construct Redis keys or select servers.
+    * @return Result produced by this helper.
+    */
    string typeJobsKey(const string& type)
    {
       return "jobs:type:{" + type + "}";
    }
 
    /** @brief Returns the per-server summary hash.
-      * @param type Server type used to construct Redis keys or select servers.
-      * @param id Server identifier.
-      * @return Result produced by this helper.
-      */
+    * @param type Server type used to construct Redis keys or select servers.
+    * @param id Server identifier.
+    * @return Result produced by this helper.
+    */
    string serverSummaryKey(const string& type, const string& id)
    {
       return "summary:server:{" + type + "}:" + id;
    }
 
    /** @brief Returns the per-type summary hash.
-      * @param type Server type used to construct Redis keys or select servers.
-      * @return Result produced by this helper.
-      */
+    * @param type Server type used to construct Redis keys or select servers.
+    * @return Result produced by this helper.
+    */
    string typeSummaryKey(const string& type)
    {
       return "summary:type:{" + type + "}";
    }
 
    /**
-      * @brief Creates a process-unique token for cleanup-lease ownership.
-      * @return A hexadecimal token containing a clock value and random components.
-      */
+    * @brief Creates a process-unique token for cleanup-lease ownership.
+    * @return A hexadecimal token containing a clock value and random components.
+    */
    string ownerToken()
    {
       std::random_device rd;
@@ -203,14 +204,14 @@ namespace
    }
 
    /**
-      * @brief Evaluates a Redis Lua script and converts its result to int64_t.
-      * @tparam Redis Redis++ client type.
-      * @param redis Redis client.
-      * @param script Lua script source.
-      * @param keys Redis keys supplied as KEYS.
-      * @param args arguments supplied as ARGV.
-      * @return Integer result returned by the script.
-      */
+    * @brief Evaluates a Redis Lua script and converts its result to int64_t.
+    * @tparam Redis Redis++ client type.
+    * @param redis Redis client.
+    * @param script Lua script source.
+    * @param keys Redis keys supplied as KEYS.
+    * @param args arguments supplied as ARGV.
+    * @return Integer result returned by the script.
+    */
    template <typename Redis>
    int64_t evalScript(
          Redis& redis,
@@ -223,15 +224,15 @@ namespace
    }
 
    /**
-      * @brief Fences and cleans one expired registered server, renewing the lease as needed.
-      * @tparam Redis Redis connection type providing the required Redis++ commands.
-      * @tparam Renew Callable that renews the distributed cleanup lease when necessary.
-      * @param redis Redis connection used for the cleanup operations.
-      * @param type Server type that owns the server.
-      * @param id Server ID being cleaned.
-      * @param config Cleanup timing and retention configuration.
-      * @param renewIfNeeded Lease-renewal callback invoked before potentially long operations.
-      */
+    * @brief Fences and cleans one expired registered server, renewing the lease as needed.
+    * @tparam Redis Redis connection type providing the required Redis++ commands.
+    * @tparam Renew Callable that renews the distributed cleanup lease when necessary.
+    * @param redis Redis connection used for the cleanup operations.
+    * @param type Server type that owns the server.
+    * @param id Server ID being cleaned.
+    * @param config Cleanup timing and retention configuration.
+    * @param renewIfNeeded Lease-renewal callback invoked before potentially long operations.
+    */
    template <typename Redis, typename Renew>
    void cleanupRegisteredServer(
          Redis& redis,
@@ -300,14 +301,14 @@ namespace
    }
 
    /**
-      * @brief Indexes retirement tombstones and collects those past the configured retention period.
-      * @tparam Redis Redis connection type providing the required Redis++ commands.
-      * @tparam Renew Callable that renews the distributed cleanup lease when necessary.
-      * @param redis Redis connection used for indexing and collection.
-      * @param type Server type whose retired-server index is processed.
-      * @param config Cleanup timing and retention configuration.
-      * @param renewIfNeeded Lease-renewal callback invoked during the scan.
-      */
+    * @brief Indexes retirement tombstones and collects those past the configured retention period.
+    * @tparam Redis Redis connection type providing the required Redis++ commands.
+    * @tparam Renew Callable that renews the distributed cleanup lease when necessary.
+    * @param redis Redis connection used for indexing and collection.
+    * @param type Server type whose retired-server index is processed.
+    * @param config Cleanup timing and retention configuration.
+    * @param renewIfNeeded Lease-renewal callback invoked during the scan.
+    */
    template <typename Redis, typename Renew>
    void collectRetiredServers(
          Redis& redis,
@@ -361,12 +362,12 @@ namespace
    }
 
    /**
-      * @brief Acquires the distributed cleanup lease and performs a complete registry scan.
-      * @tparam Redis Redis connection type providing the required Redis++ commands.
-      * @param redis Redis connection used for the scan.
-      * @param config Cleanup timing and retention configuration.
-      * @param token Unique ownership token for the cleanup lease.
-      */
+    * @brief Acquires the distributed cleanup lease and performs a complete registry scan.
+    * @tparam Redis Redis connection type providing the required Redis++ commands.
+    * @param redis Redis connection used for the scan.
+    * @param config Cleanup timing and retention configuration.
+    * @param token Unique ownership token for the cleanup lease.
+    */
    template <typename Redis>
    void runCleanupScan(
          Redis& redis,
@@ -452,10 +453,10 @@ namespace
 } // namespace
 
 /**
-   * @brief Constructs the cleanup manager, loads its configuration, and starts cleanup.
-   * @param provider Source of manager timing settings; an empty provider selects defaults.
-   * @throws std::invalid_argument if a configured duration is not positive.
-   */
+ * @brief Constructs the cleanup manager, loads its configuration, and starts cleanup.
+ * @param provider Source of manager timing settings; an empty provider selects defaults.
+ * @throws std::invalid_argument if a configured duration is not positive.
+ */
 RedisHeartbeatManager::RedisHeartbeatManager(ConfigProvider provider)
 {
    // Resolve the status configuration first. When disabled, do not initialize
@@ -491,9 +492,9 @@ RedisHeartbeatManager::~RedisHeartbeatManager()
 }
 
 /**
-   * @brief Starts the process-wide cleanup manager exactly once.
-   * @param provider Optional source of manager timing settings.
-   */
+ * @brief Starts the process-wide cleanup manager exactly once.
+ * @param provider Optional source of manager timing settings.
+ */
 std::shared_ptr<RedisHeartbeatManager> RedisHeartbeatManager::Instance(
       ConfigProvider provider)
 {
@@ -503,10 +504,10 @@ std::shared_ptr<RedisHeartbeatManager> RedisHeartbeatManager::Instance(
 }
 
 /**
-   * @brief Starts the process-wide heartbeat publisher once.
-   *
-   * Uses the configured RedisJobStatus singleton and manager heartbeat timings.
-   */
+ * @brief Starts the process-wide heartbeat publisher once.
+ *
+ * Uses the configured RedisJobStatus singleton and manager heartbeat timings.
+ */
 void RedisHeartbeatManager::HeartbeatStart()
 {
    const auto status = RedisJobStatus::Instance();
@@ -527,11 +528,11 @@ void RedisHeartbeatManager::HeartbeatStart()
 }
 
 /**
-   * @brief Stops and joins the cleanup thread.
-   *
-   * The heartbeat publisher has an independent lifetime and is stopped when
-   * the manager is destroyed.
-   */
+ * @brief Stops and joins the cleanup thread.
+ *
+ * The heartbeat publisher has an independent lifetime and is stopped when
+ * the manager is destroyed.
+ */
 void RedisHeartbeatManager::stop()
 {
    {
@@ -548,11 +549,11 @@ void RedisHeartbeatManager::stop()
 }
 
 /**
-   * @brief Runs cleanup scans until shutdown is requested.
-   *
-   * Scan failures are logged; the loop remains alive and retries after the
-   * configured scan interval.
-   */
+ * @brief Runs cleanup scans until shutdown is requested.
+ *
+ * Scan failures are logged; the loop remains alive and retries after the
+ * configured scan interval.
+ */
 void RedisHeartbeatManager::cleanupLoop()
 {
    std::unique_lock<std::mutex> lock(m_mutex);
@@ -588,13 +589,13 @@ void RedisHeartbeatManager::cleanupLoop()
 }
 
 /**
-   * @brief Performs one distributed scan for workers with expired heartbeats.
-   *
-   * The process first acquires the registry-slot cleanup lease. For each
-   * registered server, a per-type Lua script performs authoritative fencing.
-   * Once fenced, a second Lua script removes the server's jobs and summaries.
-   * The lease is renewed during long scans and released on success or failure.
-   */
+ * @brief Performs one distributed scan for workers with expired heartbeats.
+ *
+ * The process first acquires the registry-slot cleanup lease. For each
+ * registered server, a per-type Lua script performs authoritative fencing.
+ * Once fenced, a second Lua script removes the server's jobs and summaries.
+ * The lease is renewed during long scans and released on success or failure.
+ */
 void RedisHeartbeatManager::scanOnce()
 {
    if (!m_enabled)

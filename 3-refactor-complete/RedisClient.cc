@@ -1,7 +1,7 @@
 /**
-   * @file RedisClient.cc
-   * @brief Implementation of RedisClient configuration and lazy singleton.
-   */
+ * @file RedisClient.cc
+ * @brief Implementation of RedisClient configuration and lazy singleton.
+ */
 
 #include "RedisClient.h"
 
@@ -28,11 +28,11 @@ string get_reg_val(const string& key);
 namespace
 {
    /**
-      * @brief Parses the Redis Cluster configuration flag, accepting common boolean spellings.
-      * @param value Raw configuration value.
-      * @return True when Cluster mode is enabled; false when disabled.
-      * @throws std::invalid_argument if value is not a recognized boolean spelling.
-      */
+    * @brief Parses the Redis Cluster configuration flag, accepting common boolean spellings.
+    * @param value Raw configuration value.
+    * @return True when Cluster mode is enabled; false when disabled.
+    * @throws std::invalid_argument if value is not a recognized boolean spelling.
+    */
    bool parseClusterFlag(string value)
    {
       transform(value.begin(), value.end(), value.begin(),
@@ -55,10 +55,10 @@ namespace
    }
 
    /**
-      * @brief Loads the Redis URL and Cluster-mode setting from the host configuration registry.
-      * @return RedisClient configuration assembled from the registry values.
-      * @throws std::invalid_argument if the Redis URL is missing or the Cluster flag is invalid.
-      */
+    * @brief Loads the Redis URL and Cluster-mode setting from the host configuration registry.
+    * @return RedisClient configuration assembled from the registry values.
+    * @throws std::invalid_argument if the Redis URL is missing or the Cluster flag is invalid.
+    */
    RedisClient::Config defaultConfigProvider()
    {
       const auto url = get_reg_val("redisUrl");

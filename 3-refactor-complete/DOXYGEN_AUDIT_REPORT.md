@@ -1,5 +1,45 @@
 # Doxygen and formatting audit report
 
+## Manual formatting follow-up — 2026-11-18
+
+### Scope and method
+
+The folder-local `.clang-format` file was reviewed. It specifies LLVM-based formatting with
+three-space indentation, three-space continuation indentation, no tabs, custom brace wrapping,
+a 100-column limit, left pointer alignment, and no short functions or short `if` statements on
+one line.
+
+The environment did not contain a `clang-format` executable; `clang-format --version` could
+not run. Therefore **clang-format was not run**. At the user's explicit direction, a best-effort
+manual whitespace/comment formatting pass was applied to the five `.cc` files and four `.h`
+files:
+
+- Normalized indentation in the four headers from the prior two-space layout to three-space
+  indentation, including class access labels.
+- Aligned multi-line Doxygen comment stars and closing delimiters.
+- Expanded the short `if` statement and inline `isEnabled()` function in keeping with the
+  configured preferences.
+- Left identifiers, literals, expressions, declarations, include order, and program logic
+  unchanged. No files outside the nine C++ source/header files were formatted.
+
+This is a **manual best-effort pass, not a claim of exact clang-format conformance**. A real
+clang-format run remains a follow-up once the executable is available.
+
+### Verification against the immediately preceding commit
+
+- Parent revision: `3b2b65422dce2ad9b69f2dc0c99c70f5c303b3d3`.
+- Files formatted: all nine `.cc` and `.h` files in this folder.
+- A whitespace/comment-insensitive lexical comparison was run on each pre-pass and post-pass
+  file. All token sequences were identical: **8,694 tokens across nine files**.
+- No tabs or trailing whitespace were found in the formatted files.
+- Three documentation/comment lines remain longer than 100 columns. They were not manually
+  reflowed because comment reflow can alter documentation presentation.
+- No C++ compiler, Doxygen executable, clang-format executable, unit tests, or Redis integration
+  tests were run. Token identity is a useful formatting regression check, not proof of successful
+  compilation or runtime behavior.
+
+The resulting GitHub commit records the file-level comparison against the previous main revision.
+
 ## Scope and revision range
 
 - Repository: `mikegithub99/test2`

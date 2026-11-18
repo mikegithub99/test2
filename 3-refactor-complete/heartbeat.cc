@@ -1,11 +1,11 @@
 /**
-   * @file heartbeat.cc
-   * @brief Worker startup example using the process-wide status and heartbeat services.
-   *
-   * The host application supplies configuration initialization and its normal
-   * worker event loop. RedisJobStatus::Instance() reads the configured identity;
-   * registration must complete before the heartbeat publisher starts.
-   */
+ * @file heartbeat.cc
+ * @brief Worker startup example using the process-wide status and heartbeat services.
+ *
+ * The host application supplies configuration initialization and its normal
+ * worker event loop. RedisJobStatus::Instance() reads the configured identity;
+ * registration must complete before the heartbeat publisher starts.
+ */
 
 #include "RedisJobStatus.h"
 #include "RedisHeartbeatManager.h"
