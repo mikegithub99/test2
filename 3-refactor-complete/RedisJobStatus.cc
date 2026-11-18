@@ -256,6 +256,8 @@ map<string, int64_t> countersFromSnapshot(
   return counters;
 }
 
+std::size_t parseSnapshotSize(const string& value, const char* context);
+
 vector<RedisJobStatus::ServerSummary> parseServerSummariesSnapshot(
     const vector<string>& flat)
 {
