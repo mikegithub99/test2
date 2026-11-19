@@ -34,10 +34,9 @@ class RedisJobStatus final
 {
  public:
    /**
+    * @brief Result codes returned by job lifecycle operations.
+    *
     * Numeric values are part of the Lua-script/C++ result contract and must remain stable.
-    */
-   /**
-    * Result codes returned by job lifecycle operations.
     */
    enum class Result : std::int64_t
    {
@@ -106,6 +105,7 @@ class RedisJobStatus final
     */
    struct ServerSummary
    {
+      /** Identifier of the server instance. */
       std::string serverId;
       /**
        * Named counters materialized for the server.
@@ -261,9 +261,6 @@ class RedisJobStatus final
 
    /**
     * @brief Converts a lifecycle script result, rejecting unknown values.
-    */
-   /**
-    * @brief Converts a lifecycle script result, rejecting unknown values.
     * @param value Numeric result returned by the lifecycle Lua script.
     */
    static Result resultFromScript(std::int64_t value);
@@ -324,7 +321,6 @@ class RedisJobStatus final
     * @param jobId Application job identifier to validate.
     */
    void validateLifecycleIdentity(const std::string& jobId) const;
-   /** Whether Redis-backed status reporting is enabled. */
    /** Indicates whether Redis-backed status reporting is enabled. */
    bool m_enabled = true;
    /**
