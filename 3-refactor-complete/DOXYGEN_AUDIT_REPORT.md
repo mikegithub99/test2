@@ -161,3 +161,17 @@ Updated all four header files in `3-refactor-complete`:
 - Doxygen itself was not run, so generated documentation output was not verified.
 - A C++ compiler and unit/integration tests were not run.
 - `clang-format` was not run; this pass changes documentation comments, not formatter settings.
+
+
+### Final verification addendum — 2026-11-18
+
+After review, duplicate adjacent documentation blocks in `RedisJobStatus.h` were removed and the remaining undocumented `ServerSummary::serverId` member was documented. The final read-back check of all four headers reported:
+
+| Header | Trailing Doxygen markers (`///<` or `/**<`) | Adjacent duplicate Doxygen blocks |
+|---|---:|---:|
+| `HeartbeatRunner.h` | 0 | 0 |
+| `RedisClient.h` | 0 | 0 |
+| `RedisHeartbeatManager.h` | 0 | 0 |
+| `RedisJobStatus.h` | 0 | 0 |
+
+All four headers were fetched again from the pushed `main` branch for this check. The check is textual; it does not replace running Doxygen or compiling the project.
