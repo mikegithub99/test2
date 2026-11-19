@@ -33,24 +33,31 @@
 class RedisJobStatus final
 {
  public:
-   // Numeric values are part of the Lua-script/C++ result contract; keep stable.
+   /**
+    * Numeric values are part of the Lua-script/C++ result contract and must remain stable.
+    */
    /**
     * Result codes returned by job lifecycle operations.
     */
    enum class Result : std::int64_t
    {
+      /** Operation completed successfully. */
       Success = 0,
       /**
        * Requested operation required no state change.
        */
       NoOp = 1,
+      /** The requested job does not exist. */
       JobNotFound = 2,
+      /** The requested job-state transition is invalid. */
       InvalidTransition = 3,
       /**
        * Redis contains inconsistent job data.
        */
       InconsistentData = 4,
+      /** A job with the requested identifier already exists. */
       JobAlreadyExists = 5,
+      /** Redis-backed status reporting is disabled. */
       Disabled = 6,
       /**
        * The server is not active.
@@ -63,11 +70,13 @@ class RedisJobStatus final
     */
    enum class State
    {
+      /** Job has been created but not activated. */
       Pending,
       /**
        * Job is currently active.
        */
       Active,
+      /** Job is temporarily suspended. */
       Suspended
    };
 
@@ -76,16 +85,22 @@ class RedisJobStatus final
     */
    struct Job
    {
+      /** Original application job identifier. */
       std::string jobId;
       /**
        * Current lifecycle status of the job.
        */
+      /** Current lifecycle status of the job. */
       std::string status;
+      /** Server type associated with the job or configuration. */
       std::string serverType;
+      /** Server instance associated with the job or configuration. */
+      /** Server instance identifier. */
       std::string serverId;
       /**
        * Additional job metadata fields.
        */
+      /** Additional job metadata fields. */
       std::map<std::string, std::string> fields;
    };
 
@@ -106,11 +121,13 @@ class RedisJobStatus final
     */
    struct Config
    {
+      /** Enables or disables Redis-backed status reporting. */
       bool enabled = true;
       /**
        * Configured server type used for Redis key construction.
        */
       std::string serverType;
+      /** Configured server instance identifier. */
       std::string serverId;
    };
 
@@ -220,25 +237,32 @@ class RedisJobStatus final
  private:
    enum class RegistrationResult : std::int64_t
    {
+      /** Server was already present in the registry. */
       AlreadyPresent = 0,
+      /** Server was newly added to the registry. */
       Added = 1
    };
 
    enum class ActivationResult : std::int64_t
    {
+      /** Job already has a lifecycle state. */
       AlreadyHasLifecycleState = 0,
+      /** Job was activated successfully. */
       Activated = 1
    };
 
    enum class HeartbeatResult : std::int64_t
    {
+      /** Heartbeat refresh was rejected. */
       Rejected = 0,
+      /** Heartbeat was refreshed successfully. */
       Refreshed = 1
    };
 
    /**
     * @brief Converts a lifecycle script result, rejecting unknown values.
     */
+   /** @brief Converts a lifecycle script result, rejecting unknown values. */
    static Result resultFromScript(std::int64_t value);
    /**
     * @brief Converts a registry script result, rejecting unknown values.
@@ -277,24 +301,38 @@ class RedisJobStatus final
     */
    explicit RedisJobStatus(ConfigProvider provider);
 
+   /**
+    * @brief Returns the Redis representation of a lifecycle state.
+    * @param state Lifecycle state to convert.
+    */
    static std::string stateName(State state);
    /**
     * Validates a server type or server identifier.
     */
+   /**
+    * @brief Validates a server type or server identifier.
+    * @param value Identifier value to validate.
+    * @param name Name used in validation error messages.
+    * @param isServerType Selects server-type-specific validation when true.
+    */
    static void validateIdentifier(
          const std::string& value,
          const char* name,
-         /**
-          * Selects server-type-specific validation when true.
-          */
          bool isServerType = false);
+   /**
+    * @brief Validates the configured server identity and supplied job identifier.
+    * @param jobId Application job identifier to validate.
+    */
    void validateLifecycleIdentity(const std::string& jobId) const;
+   /** Whether Redis-backed status reporting is enabled. */
    bool m_enabled = true;
    /**
     * Configured server type used for Redis key construction.
     */
    std::string m_serverType;
+   /** Configured server instance identifier. */
    std::string m_serverId;
+   /** Redis client used by job-status operations. */
    std::shared_ptr<RedisClient> m_client;
 };
 
