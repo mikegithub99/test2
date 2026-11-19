@@ -41,15 +41,27 @@ class RedisHeartbeatManager final
    struct Config
    {
       std::int64_t heartbeatTtlSeconds = 30;
+      /**
+       * Interval in seconds between heartbeat refreshes.
+       */
       std::int64_t heartbeatRefreshIntervalSeconds = 10;
       std::int64_t cleanupLeaseTtlMilliseconds = 30000;
       std::int64_t cleanupLeaseRenewIntervalSeconds = 5;
+      /**
+       * Interval in seconds between cleanup scans.
+       */
       std::int64_t cleanupScanIntervalSeconds = 5;
       // Maximum time allowed between registration and the first heartbeat.
       std::int64_t firstHeartbeatTimeoutSeconds = 60;
+      /**
+       * Retention period in seconds for retired-server tombstones.
+       */
       std::int64_t retiredTombstoneRetentionSeconds = 24 * 60 * 60;
    };
 
+   /**
+    * Callable that supplies heartbeat and cleanup timing configuration.
+    */
    using ConfigProvider = std::function<Config()>;
 
    /**
@@ -68,13 +80,19 @@ class RedisHeartbeatManager final
     */
    void HeartbeatStart();
 
-   /** @brief Prevents copying the process manager. */
+   /**
+    * @brief Prevents copying the process manager.
+    */
    RedisHeartbeatManager(const RedisHeartbeatManager&) = delete;
 
-   /** @brief Prevents copy assignment of the process manager. */
+   /**
+    * @brief Prevents copy assignment of the process manager.
+    */
    RedisHeartbeatManager& operator=(const RedisHeartbeatManager&) = delete;
 
-   /** @brief Stops and joins the cleanup thread. */
+   /**
+    * @brief Stops and joins the cleanup thread.
+    */
    ~RedisHeartbeatManager();
 
    /**
@@ -85,25 +103,58 @@ class RedisHeartbeatManager final
     */
    void scanOnce();
 
-   /** @brief Stops and joins cleanup; the heartbeat runner stops when the manager is destroyed. */
+   /**
+    * @brief Stops and joins cleanup; the heartbeat runner stops when the manager is destroyed.
+    */
    void stop();
 
  private:
-   /** @brief Constructs the singleton, loads its configuration, and starts cleanup. */
+   /**
+    * @brief Constructs the singleton, loads its configuration, and starts cleanup.
+    */
    explicit RedisHeartbeatManager(ConfigProvider provider);
 
-   /** @brief Runs cleanup scans until shutdown is requested. */
+   /**
+    * @brief Runs cleanup scans until shutdown is requested.
+    */
    void cleanupLoop();
 
-   bool m_enabled = false; ///< False when Redis status reporting is disabled.
-   Config m_config; ///< Injected heartbeat and cleanup timing configuration.
-   std::shared_ptr<RedisClient> m_client; ///< Redis client used for cleanup.
-   std::mutex m_mutex; ///< Protects cleanup-thread shutdown state.
-   std::condition_variable m_wakeup; ///< Wakes the cleanup loop during shutdown.
-   bool m_stopping = false; ///< True after cleanup shutdown is requested.
-   std::thread m_cleanupThread; ///< Background distributed cleanup thread.
-   std::mutex m_heartbeatMutex; ///< Protects heartbeat-runner initialization.
-   std::unique_ptr<HeartbeatRunner> m_heartbeatRunner; ///< Worker heartbeat publisher.
+   /**
+    * False when Redis status reporting is disabled.
+    */
+   bool m_enabled = false;
+   /**
+    * Injected heartbeat and cleanup timing configuration.
+    */
+   Config m_config;
+   /**
+    * Redis client used for cleanup.
+    */
+   std::shared_ptr<RedisClient> m_client;
+   /**
+    * Protects cleanup-thread shutdown state.
+    */
+   std::mutex m_mutex;
+   /**
+    * Wakes the cleanup loop during shutdown.
+    */
+   std::condition_variable m_wakeup;
+   /**
+    * True after cleanup shutdown is requested.
+    */
+   bool m_stopping = false;
+   /**
+    * Background distributed cleanup thread.
+    */
+   std::thread m_cleanupThread;
+   /**
+    * Protects heartbeat-runner initialization.
+    */
+   std::mutex m_heartbeatMutex;
+   /**
+    * Worker heartbeat publisher.
+    */
+   std::unique_ptr<HeartbeatRunner> m_heartbeatRunner;
 };
 
 #endif // REDIS_HEARTBEAT_MANAGER_H
