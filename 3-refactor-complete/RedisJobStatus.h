@@ -173,6 +173,8 @@ class RedisJobStatus final
     *
     * Valid transitions are PENDING->ACTIVE, ACTIVE->SUSPENDED, and
     * SUSPENDED->ACTIVE. Repeating the current state returns NoOp.
+    * @param jobId Application job identifier.
+    * @param newState Target lifecycle state.
     */
    Result transitionJob(
          const std::string& jobId,
@@ -180,6 +182,7 @@ class RedisJobStatus final
 
    /**
     * @brief Removes a tracked job and updates indexes/counters atomically.
+    * @param jobId Application job identifier to remove.
     */
    Result completeJob(const std::string& jobId);
 
@@ -194,6 +197,7 @@ class RedisJobStatus final
 
    /**
     * @brief Refreshes this object's heartbeat with a positive TTL in seconds.
+    * @param ttlSeconds Positive heartbeat TTL in seconds.
     */
    void refreshHeartbeat(std::int64_t ttlSeconds);
 
@@ -204,12 +208,14 @@ class RedisJobStatus final
 
    /**
     * @brief Returns the materialized summary for one server type.
+    * @param serverType Server type whose summary is returned.
     */
    std::map<std::string, std::int64_t> getServerTypeSummary(
          const std::string& serverType);
 
    /**
     * @brief Returns registered instances and their summary counters.
+    * @param serverType Server type whose instances are returned.
     */
    std::vector<ServerSummary> getServerSummaries(
          const std::string& serverType);
@@ -220,6 +226,8 @@ class RedisJobStatus final
     * References are enumerated before the Lua snapshot. Jobs removed before
     * the snapshot are skipped; jobs added after enumeration are not included.
     * Existing records are checked for serverType/serverId ownership.
+    * @param serverType Server type used to select the instances.
+    * @param serverId Server instance identifier.
     */
    std::vector<Job> getServerJobs(
          const std::string& serverType,
@@ -231,6 +239,7 @@ class RedisJobStatus final
     * Uses the type-wide job index. Jobs removed before the Lua snapshot are
     * skipped; jobs added after enumeration are not included. Existing records
     * are checked for serverType ownership.
+    * @param serverType Server type whose jobs are returned.
     */
    std::vector<Job> getServerTypeJobs(const std::string& serverType);
 
@@ -279,6 +288,8 @@ class RedisJobStatus final
 
    /**
     * @brief Validates caller-supplied registration metadata.
+    * @param serverTypeMetadata Metadata merged into the server-type summary.
+    * @param serverMetadata Metadata merged into this server's summary.
     */
    void validateRegistrationMetadata(
          const std::map<std::string, std::string>& serverTypeMetadata,
@@ -291,6 +302,8 @@ class RedisJobStatus final
 
    /**
     * @brief Writes per-type metadata and activates the server in its type slot.
+    * @param serverTypeMetadata Metadata merged into the server-type summary.
+    * @param serverMetadata Metadata merged into this server's summary.
     */
    void activateRegisteredServer(
          const std::map<std::string, std::string>& serverTypeMetadata,
