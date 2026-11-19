@@ -129,3 +129,35 @@ The whitespace-only token comparison confirms that these changes did not alter t
 ## Audit limitations
 
 This audit compared the baseline and head file contents and performed lexical token comparison and source-level Doxygen tag checks. It did not run a C++ compiler, Doxygen itself, `clang-format`, unit tests, or live Redis/Redis Cluster integration tests. Therefore it supports the conclusion that no token-level C++ changes were introduced in the audited range, but it does not certify compilation, Doxygen rendering, or runtime behavior.
+
+
+## Header Doxygen style pass — 2026-11-18
+
+### Scope
+
+Updated all four header files in `3-refactor-complete`:
+
+- `HeartbeatRunner.h`
+- `RedisClient.h`
+- `RedisHeartbeatManager.h`
+- `RedisJobStatus.h`
+
+### Changes
+
+- Replaced trailing member documentation (`///< ...`) with Doxygen block comments placed immediately above the documented declaration.
+- Standardized existing compact Doxygen comments into the same above-declaration block style where applicable.
+- Added documentation for previously undocumented class members, configuration fields, enum values, deleted copy operations, private state, and helper declarations.
+- Kept ordinary implementation comments out of the header documentation style where they are explanatory rather than declaration documentation.
+- No `.cc` files or implementation logic were changed in this pass.
+
+### Checks performed
+
+- Re-read all four updated headers from the pushed `main` branch.
+- Textual scan found no remaining `///<` or `/**<` trailing-documentation markers in the four headers.
+- Reviewed the resulting declarations and documentation placement. This is a source-level review only.
+
+### Limitations
+
+- Doxygen itself was not run, so generated documentation output was not verified.
+- A C++ compiler and unit/integration tests were not run.
+- `clang-format` was not run; this pass changes documentation comments, not formatter settings.
