@@ -90,17 +90,14 @@ class RedisJobStatus final
       /**
        * Current lifecycle status of the job.
        */
-      /** Current lifecycle status of the job. */
       std::string status;
       /** Server type associated with the job or configuration. */
       std::string serverType;
-      /** Server instance associated with the job or configuration. */
       /** Server instance identifier. */
       std::string serverId;
       /**
        * Additional job metadata fields.
        */
-      /** Additional job metadata fields. */
       std::map<std::string, std::string> fields;
    };
 
@@ -157,6 +154,9 @@ class RedisJobStatus final
     * Prevents copying the status API object.
     */
    RedisJobStatus(const RedisJobStatus&) = delete;
+   /**
+    * @brief Prevents copy assignment of the status API object.
+    */
    RedisJobStatus& operator=(const RedisJobStatus&) = delete;
 
    /**
@@ -262,7 +262,10 @@ class RedisJobStatus final
    /**
     * @brief Converts a lifecycle script result, rejecting unknown values.
     */
-   /** @brief Converts a lifecycle script result, rejecting unknown values. */
+   /**
+    * @brief Converts a lifecycle script result, rejecting unknown values.
+    * @param value Numeric result returned by the lifecycle Lua script.
+    */
    static Result resultFromScript(std::int64_t value);
    /**
     * @brief Converts a registry script result, rejecting unknown values.
@@ -307,9 +310,6 @@ class RedisJobStatus final
     */
    static std::string stateName(State state);
    /**
-    * Validates a server type or server identifier.
-    */
-   /**
     * @brief Validates a server type or server identifier.
     * @param value Identifier value to validate.
     * @param name Name used in validation error messages.
@@ -325,6 +325,7 @@ class RedisJobStatus final
     */
    void validateLifecycleIdentity(const std::string& jobId) const;
    /** Whether Redis-backed status reporting is enabled. */
+   /** Indicates whether Redis-backed status reporting is enabled. */
    bool m_enabled = true;
    /**
     * Configured server type used for Redis key construction.
