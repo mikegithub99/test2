@@ -27,12 +27,21 @@
 class RedisClient final
 {
  public:
+   /**
+    * Redis connection configuration.
+    */
    struct Config
    {
       std::string redisUrl;
+      /**
+       * True when the connection targets a Redis Cluster.
+       */
       bool isCluster = false;
    };
 
+   /**
+    * Callable that supplies Redis connection configuration.
+    */
    using ConfigProvider = std::function<Config()>;
    using Client = std::variant<
          std::unique_ptr<sw::redis::Redis>,
@@ -47,6 +56,9 @@ class RedisClient final
    static std::shared_ptr<RedisClient> Instance(ConfigProvider provider = {});
 
    RedisClient(const RedisClient&) = delete;
+   /**
+    * Prevents copy assignment of the Redis client wrapper.
+    */
    RedisClient& operator=(const RedisClient&) = delete;
 
    /**
@@ -66,6 +78,9 @@ class RedisClient final
 
  private:
    explicit RedisClient(ConfigProvider provider = {});
+   /**
+    * Owns the active standalone or cluster Redis client.
+    */
    Client m_client;
 };
 
