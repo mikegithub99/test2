@@ -73,6 +73,7 @@ class RedisClient final
    /**
     * @brief Invokes a callable with the active sw::redis::Redis or sw::redis::Redis Cluster client.
     * @tparam Fn Callable accepting either concrete client reference.
+    * @param fn Callable invoked with the active Redis client.
     */
    template <typename Fn>
    decltype(auto) execute(Fn&& fn)
