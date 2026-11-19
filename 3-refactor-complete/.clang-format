@@ -2,6 +2,7 @@
 BasedOnStyle: LLVM
 IndentWidth: 3
 ContinuationIndentWidth: 3
+AlignAfterOpenBracket: DontAlign
 UseTab: Never
 BreakBeforeBraces: Custom
 BraceWrapping:
@@ -14,6 +15,8 @@ BraceWrapping:
   AfterUnion: true
   BeforeCatch: true
   BeforeElse: true
+  BeforeLambdaBody: true
+  SplitEmptyFunction: true
   IndentBraces: false
 ColumnLimit: 100
 PointerAlignment: Left
