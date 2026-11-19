@@ -18,11 +18,11 @@ BraceWrapping:
   BeforeLambdaBody: true
   SplitEmptyFunction: true
   IndentBraces: false
-ColumnLimit: 100
+ColumnLimit: 80
 PointerAlignment: Left
 DerivePointerAlignment: false
 NamespaceIndentation: All
-AccessModifierOffset: -2
+AccessModifierOffset: -3
 AllowShortFunctionsOnASingleLine: None
 AllowShortLambdasOnASingleLine: None
 AllowShortIfStatementsOnASingleLine: Never
