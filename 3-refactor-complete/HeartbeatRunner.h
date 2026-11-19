@@ -35,26 +35,55 @@ class HeartbeatRunner final
          std::int64_t heartbeatTtlSeconds,
          std::int64_t heartbeatRefreshIntervalSeconds);
 
-   /** @brief Requests shutdown and joins the heartbeat thread. */
+   /**
+    * @brief Requests shutdown and joins the heartbeat thread.
+    */
    ~HeartbeatRunner();
 
-   /** @brief Prevents copying the heartbeat runner. */
+   /**
+    * @brief Prevents copying the heartbeat runner.
+    */
    HeartbeatRunner(const HeartbeatRunner&) = delete;
 
-   /** @brief Prevents copy assignment of the heartbeat runner. */
+   /**
+    * @brief Prevents copy assignment of the heartbeat runner.
+    */
    HeartbeatRunner& operator=(const HeartbeatRunner&) = delete;
 
  private:
-   /** @brief Refreshes the heartbeat immediately and on each configured interval. */
+   /**
+    * @brief Refreshes the heartbeat immediately and on each configured interval.
+    */
    void run();
 
-   std::shared_ptr<RedisJobStatus> m_status; ///< Retained worker status object.
-   std::int64_t m_heartbeatTtlSeconds; ///< TTL supplied to heartbeat refreshes.
-   std::int64_t m_heartbeatRefreshIntervalSeconds; ///< Delay between heartbeat refreshes.
-   std::mutex m_mutex; ///< Protects the runner shutdown flag.
-   std::condition_variable m_wakeup; ///< Wakes the runner during shutdown.
-   bool m_stopping = false; ///< True after shutdown is requested.
-   std::thread m_thread; ///< Background heartbeat publication thread.
+   /**
+    * Retained worker status object.
+    */
+   std::shared_ptr<RedisJobStatus> m_status;
+   /**
+    * TTL supplied to heartbeat refreshes.
+    */
+   std::int64_t m_heartbeatTtlSeconds;
+   /**
+    * Delay between heartbeat refreshes.
+    */
+   std::int64_t m_heartbeatRefreshIntervalSeconds;
+   /**
+    * Protects the runner shutdown flag.
+    */
+   std::mutex m_mutex;
+   /**
+    * Wakes the runner during shutdown.
+    */
+   std::condition_variable m_wakeup;
+   /**
+    * True after shutdown is requested.
+    */
+   bool m_stopping = false;
+   /**
+    * Background heartbeat publication thread.
+    */
+   std::thread m_thread;
 };
 
 #endif // HEARTBEAT_RUNNER_H
