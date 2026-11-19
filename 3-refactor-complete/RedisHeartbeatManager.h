@@ -40,18 +40,29 @@ class RedisHeartbeatManager final
     */
    struct Config
    {
+      /**
+       * TTL in seconds applied to each heartbeat.
+       */
       std::int64_t heartbeatTtlSeconds = 30;
       /**
        * Interval in seconds between heartbeat refreshes.
        */
       std::int64_t heartbeatRefreshIntervalSeconds = 10;
+      /**
+       * TTL in milliseconds for the distributed cleanup lease.
+       */
       std::int64_t cleanupLeaseTtlMilliseconds = 30000;
+      /**
+       * Interval in seconds between cleanup lease renewals.
+       */
       std::int64_t cleanupLeaseRenewIntervalSeconds = 5;
       /**
        * Interval in seconds between cleanup scans.
        */
       std::int64_t cleanupScanIntervalSeconds = 5;
-      // Maximum time allowed between registration and the first heartbeat.
+      /**
+       * Maximum time in seconds allowed between registration and the first heartbeat.
+       */
       std::int64_t firstHeartbeatTimeoutSeconds = 60;
       /**
        * Retention period in seconds for retired-server tombstones.
