@@ -21,6 +21,7 @@ DerivePointerAlignment: false
 NamespaceIndentation: All
 AccessModifierOffset: -2
 AllowShortFunctionsOnASingleLine: None
+AllowShortLambdasOnASingleLine: None
 AllowShortIfStatementsOnASingleLine: Never
 AllowShortLoopsOnASingleLine: false
 AllowShortBlocksOnASingleLine: Never
