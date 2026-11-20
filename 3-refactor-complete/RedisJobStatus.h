@@ -175,10 +175,15 @@ class RedisJobStatus final
     * SUSPENDED->ACTIVE. Repeating the current state returns NoOp.
     * @param jobId Application job identifier.
     * @param newState Target lifecycle state.
+    * @param metadata Metadata name/value pairs to add or update. Existing
+    *        metadata names not supplied remain unchanged. Reserved lifecycle
+    *        fields are managed by the API. Metadata is applied even when the
+    *        requested state is already current and the result is NoOp.
     */
    Result transitionJob(
          const std::string& jobId,
-         State newState);
+         State newState,
+         const std::map<std::string, std::string>& metadata = {});
 
    /**
     * @brief Removes a tracked job and updates indexes/counters atomically.
