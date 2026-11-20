@@ -622,7 +622,8 @@ RedisJobStatus::Result RedisJobStatus::createPendingJob(
 
 RedisJobStatus::Result RedisJobStatus::transitionJob(
       const string& jobId,
-      State newState)
+      State newState,
+      const map<string, string>& metadata)
 {
    if (!m_enabled)
    {
@@ -633,10 +634,22 @@ RedisJobStatus::Result RedisJobStatus::transitionJob(
    {
       return Result::InvalidTransition;
    }
+   for (const auto& item : metadata)
+   {
+      if (item.first.empty())
+      {
+         throw invalid_argument("RedisJobStatus: job metadata field must not be empty");
+      }
+   }
+
    const string reference = jobReference(m_serverId, jobId);
    const string newStateName = stateName(newState);
    const KeyList keys = lifecycleKeys(jobId, m_serverType, m_serverId);
    ArgList args = {jobId, m_serverType, m_serverId, newStateName, reference};
+   appendMetadataArgs(args, metadata, [](const string& field)
+   {
+      return !isReservedJobMetadataField(field);
+   });
    const auto result = m_client->execute([&](auto& redis)
    {
       return evalCounterResult(redis, kTransitionScript, keys, args);
