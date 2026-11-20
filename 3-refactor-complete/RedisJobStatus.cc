@@ -322,6 +322,108 @@ namespace
       config.serverId = get_reg_val("redisJobStatusServerId");
       return config;
    }
+   enum class RegistrationResult : std::int64_t
+   {
+      AlreadyPresent = 0,
+      Added = 1
+   };
+
+   enum class ActivationResult : std::int64_t
+   {
+      AlreadyHasLifecycleState = 0,
+      Activated = 1
+   };
+
+   enum class HeartbeatResult : std::int64_t
+   {
+      Rejected = 0,
+      Refreshed = 1
+   };
+
+   RedisJobStatus::Result resultFromScript(std::int64_t value)
+   {
+      switch (value)
+      {
+         case 0: return RedisJobStatus::Result::Success;
+         case 1: return RedisJobStatus::Result::NoOp;
+         case 2: return RedisJobStatus::Result::JobNotFound;
+         case 3: return RedisJobStatus::Result::InvalidTransition;
+         case 4: return RedisJobStatus::Result::InconsistentData;
+         case 5: return RedisJobStatus::Result::JobAlreadyExists;
+         case 6: return RedisJobStatus::Result::Disabled;
+         case 7: return RedisJobStatus::Result::ServerNotActive;
+         default:
+            throw runtime_error("RedisJobStatus: unknown lifecycle script result " +
+                                          to_string(value));
+      }
+   }
+
+   RegistrationResult registrationResultFromScript(std::int64_t value)
+   {
+      switch (value)
+      {
+         case 0: return RegistrationResult::AlreadyPresent;
+         case 1: return RegistrationResult::Added;
+         default:
+            throw runtime_error("RedisJobStatus: unknown registry script result " +
+                                          to_string(value));
+      }
+   }
+
+   ActivationResult activationResultFromScript(std::int64_t value)
+   {
+      switch (value)
+      {
+         case 0: return ActivationResult::AlreadyHasLifecycleState;
+         case 1: return ActivationResult::Activated;
+         default:
+            throw runtime_error("RedisJobStatus: unknown activation script result " +
+                                          to_string(value));
+      }
+   }
+
+   HeartbeatResult heartbeatResultFromScript(std::int64_t value)
+   {
+      switch (value)
+      {
+         case 0: return HeartbeatResult::Rejected;
+         case 1: return HeartbeatResult::Refreshed;
+         default:
+            throw runtime_error("RedisJobStatus: unknown heartbeat script result " +
+                                          to_string(value));
+      }
+   }
+
+   string stateName(RedisJobStatus::State state)
+   {
+      switch (state)
+      {
+         case RedisJobStatus::State::Pending: return "PENDING";
+         case RedisJobStatus::State::Active: return "ACTIVE";
+         case RedisJobStatus::State::Suspended: return "SUSPENDED";
+      }
+      throw invalid_argument("RedisJobStatus: unknown state");
+   }
+
+   void validateIdentifier(
+         const string& value,
+         const char* name,
+         bool isServerType = false)
+   {
+      if (value.empty())
+      {
+         throw invalid_argument(
+               string("RedisJobStatus: ") + name + " must not be empty");
+      }
+      if (isServerType &&
+            (value.find('{') != string::npos ||
+               value.find('}') != string::npos))
+      {
+         throw invalid_argument(
+               "RedisJobStatus: serverType must not contain '{' or '}'");
+      }
+   }
+
 } // namespace
 
 RedisJobStatus::RedisJobStatus(ConfigProvider provider)
@@ -348,63 +450,6 @@ void RedisJobStatus::validateLifecycleIdentity(const string& jobId) const
    validateIdentifier(m_serverType, "serverType", true);
    validateIdentifier(m_serverId, "serverId");
    validateIdentifier(jobId, "jobId");
-}
-
-RedisJobStatus::Result RedisJobStatus::resultFromScript(std::int64_t value)
-{
-   switch (value)
-   {
-      case 0: return Result::Success;
-      case 1: return Result::NoOp;
-      case 2: return Result::JobNotFound;
-      case 3: return Result::InvalidTransition;
-      case 4: return Result::InconsistentData;
-      case 5: return Result::JobAlreadyExists;
-      case 6: return Result::Disabled;
-      case 7: return Result::ServerNotActive;
-      default:
-         throw runtime_error("RedisJobStatus: unknown lifecycle script result " +
-                                       to_string(value));
-   }
-}
-
-RedisJobStatus::RegistrationResult
-RedisJobStatus::registrationResultFromScript(std::int64_t value)
-{
-   switch (value)
-   {
-      case 0: return RegistrationResult::AlreadyPresent;
-      case 1: return RegistrationResult::Added;
-      default:
-         throw runtime_error("RedisJobStatus: unknown registry script result " +
-                                       to_string(value));
-   }
-}
-
-RedisJobStatus::ActivationResult
-RedisJobStatus::activationResultFromScript(std::int64_t value)
-{
-   switch (value)
-   {
-      case 0: return ActivationResult::AlreadyHasLifecycleState;
-      case 1: return ActivationResult::Activated;
-      default:
-         throw runtime_error("RedisJobStatus: unknown activation script result " +
-                                       to_string(value));
-   }
-}
-
-RedisJobStatus::HeartbeatResult
-RedisJobStatus::heartbeatResultFromScript(std::int64_t value)
-{
-   switch (value)
-   {
-      case 0: return HeartbeatResult::Rejected;
-      case 1: return HeartbeatResult::Refreshed;
-      default:
-         throw runtime_error("RedisJobStatus: unknown heartbeat script result " +
-                                       to_string(value));
-   }
 }
 
 RedisJobStatus::Result RedisJobStatus::createPendingJob(
@@ -623,35 +668,3 @@ void RedisJobStatus::refreshHeartbeat(int64_t ttlSeconds)
    }
 }
 
-string RedisJobStatus::stateName(State state)
-{
-   switch (state)
-   {
-      case State::Pending:
-         return "PENDING";
-      case State::Active:
-         return "ACTIVE";
-      case State::Suspended:
-         return "SUSPENDED";
-   }
-   throw invalid_argument("RedisJobStatus: unknown state");
-}
-
-void RedisJobStatus::validateIdentifier(
-      const string& value,
-      const char* name,
-      bool isServerType)
-{
-   if (value.empty())
-   {
-      throw invalid_argument(
-            string("RedisJobStatus: ") + name + " must not be empty");
-   }
-   if (isServerType &&
-         (value.find('{') != string::npos ||
-            value.find('}') != string::npos))
-   {
-      throw invalid_argument(
-            "RedisJobStatus: serverType must not contain '{' or '}'");
-   }
-}
