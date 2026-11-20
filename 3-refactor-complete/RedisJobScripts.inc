@@ -166,6 +166,12 @@ local serverType = ARGV[2]
 local serverId = ARGV[3]
 local newState = ARGV[4]
 local reference = ARGV[5]
+local metadataCount = tonumber(ARGV[6])
+if not metadataCount or metadataCount < 0 or
+   metadataCount ~= math.floor(metadataCount) or
+   #ARGV ~= 6 + metadataCount * 2 then
+  return RESULT_DATA_INCONSISTENT
+end
 if storedType ~= serverType or storedServer ~= serverId or not old then
   return RESULT_DATA_INCONSISTENT
 end
@@ -173,7 +179,17 @@ if redis.call('SISMEMBER', typeJobsKey, reference) ~= 1 or
    redis.call('SISMEMBER', serverJobsKey, reference) ~= 1 then
   return RESULT_DATA_INCONSISTENT
 end
+
+local function applyMetadata()
+  local cursor = 7
+  for i = 1, metadataCount do
+    redis.call('HSET', jobKey, ARGV[cursor], ARGV[cursor + 1])
+    cursor = cursor + 2
+  end
+end
+
 if old == newState then
+  applyMetadata()
   return RESULT_NO_OP
 end
 
@@ -197,6 +213,7 @@ if not counterValid(typeSummaryKey, oldCounter, -1, true) or
 end
 
 redis.call('HSET', jobKey, 'status', newState)
+applyMetadata()
 redis.call('HINCRBY', typeSummaryKey, oldCounter, -1)
 redis.call('HINCRBY', typeSummaryKey, newCounter, 1)
 redis.call('HINCRBY', serverSummaryKey, oldCounter, -1)
