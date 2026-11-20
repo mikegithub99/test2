@@ -13,7 +13,6 @@
 #include <functional>
 #include <memory>
 #include <string>
-#include <vector>
 
 #include "RedisClient.h"
 
@@ -77,40 +76,6 @@ class RedisJobStatus final
       Active,
       /** Job is temporarily suspended. */
       Suspended
-   };
-
-   /**
-    * Job record returned by dashboard read operations.
-    */
-   struct Job
-   {
-      /** Original application job identifier. */
-      std::string jobId;
-      /**
-       * Current lifecycle status of the job.
-       */
-      std::string status;
-      /** Server type associated with the job or configuration. */
-      std::string serverType;
-      /** Server instance identifier. */
-      std::string serverId;
-      /**
-       * Additional job metadata fields.
-       */
-      std::map<std::string, std::string> fields;
-   };
-
-   /**
-    * Summary counters for one registered server instance.
-    */
-   struct ServerSummary
-   {
-      /** Identifier of the server instance. */
-      std::string serverId;
-      /**
-       * Named counters materialized for the server.
-       */
-      std::map<std::string, std::int64_t> counters;
    };
 
    /**
@@ -205,48 +170,6 @@ class RedisJobStatus final
     * @param ttlSeconds Positive heartbeat TTL in seconds.
     */
    void refreshHeartbeat(std::int64_t ttlSeconds);
-
-   /**
-    * @brief Discovers server types registered by workers.
-    */
-   std::vector<std::string> getServerTypes();
-
-   /**
-    * @brief Returns the materialized summary for one server type.
-    * @param serverType Server type whose summary is returned.
-    */
-   std::map<std::string, std::int64_t> getServerTypeSummary(
-         const std::string& serverType);
-
-   /**
-    * @brief Returns registered instances and their summary counters.
-    * @param serverType Server type whose instances are returned.
-    */
-   std::vector<ServerSummary> getServerSummaries(
-         const std::string& serverType);
-
-   /**
-    * @brief Best-effort read of jobs for one server instance.
-    *
-    * References are enumerated before the Lua snapshot. Jobs removed before
-    * the snapshot are skipped; jobs added after enumeration are not included.
-    * Existing records are checked for serverType/serverId ownership.
-    * @param serverType Server type used to select the instances.
-    * @param serverId Server instance identifier.
-    */
-   std::vector<Job> getServerJobs(
-         const std::string& serverType,
-         const std::string& serverId);
-
-   /**
-    * @brief Best-effort read of jobs for all servers of one server type.
-    *
-    * Uses the type-wide job index. Jobs removed before the Lua snapshot are
-    * skipped; jobs added after enumeration are not included. Existing records
-    * are checked for serverType ownership.
-    * @param serverType Server type whose jobs are returned.
-    */
-   std::vector<Job> getServerTypeJobs(const std::string& serverType);
 
  private:
    enum class RegistrationResult : std::int64_t
