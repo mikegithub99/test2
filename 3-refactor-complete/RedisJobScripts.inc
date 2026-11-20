@@ -638,71 +638,7 @@ return 1
 // Index changes are normal under concurrent job creation/completion. A
 // reference no longer in the index, or whose hash has already disappeared, is
 // omitted. Newly added references are naturally outside this candidate list.
-// Existing keys are all explicitly declared in KEYS for Redis Cluster.
-const char* const kReadJobsSnapshotScript = R"lua(
-local index = KEYS[1]
-local count = tonumber(ARGV[1])
-if not count or count < 0 or count ~= math.floor(count) or
-   #KEYS ~= count + 1 or #ARGV ~= count + 1 then
-  return redis.error_reply('invalid job snapshot arguments')
-end
-local indexType = redis.call('TYPE', index).ok
-if indexType ~= 'none' and indexType ~= 'set' then
-  return redis.error_reply('wrong job index type')
-end
-
-local out = {'0'}
-local returned = 0
-for i = 1, count do
-  local ref = ARGV[i + 1]
-  if redis.call('SISMEMBER', index, ref) == 1 then
-    local jobKey = KEYS[i + 1]
-    local jobType = redis.call('TYPE', jobKey).ok
-    if jobType == 'hash' then
-      local fields = redis.call('HGETALL', jobKey)
-      returned = returned + 1
-      table.insert(out, ref)
-      table.insert(out, tostring(#fields / 2))
-      for _, value in ipairs(fields) do table.insert(out, value) end
-    elseif jobType ~= 'none' then
-      return redis.error_reply('wrong job hash type for indexed reference')
-    end
-  end
-end
-out[1] = tostring(returned)
-return out
-)lua";
-
 // Reads server summaries: KEYS are summary hashes and ARGV are server IDs.
-// Missing hashes are omitted; the read runs in one per-type Lua execution.
-const char* const kReadServerSummariesSnapshotScript = R"lua(
--- KEYS[1] is a per-type routing key, allowing empty ID lists in Cluster.
-if #KEYS ~= #ARGV + 1 then
-  return redis.error_reply('invalid summary snapshot arguments')
-end
-local out = {}
-local records = {}
-for i = 2, #KEYS do
-  local t = redis.call('TYPE', KEYS[i]).ok
-  if t ~= 'none' and t ~= 'hash' then
-    return redis.error_reply('wrong server summary key type')
-  end
-  if t == 'hash' then
-    local fields = redis.call('HGETALL', KEYS[i])
-    table.insert(records, ARGV[i - 1])
-    table.insert(records, fields)
-  end
-end
-table.insert(out, tostring(#records / 2))
-for i = 1, #records, 2 do
-  local fields = records[i + 1]
-  table.insert(out, records[i])
-  table.insert(out, tostring(#fields / 2))
-  for _, value in ipairs(fields) do table.insert(out, value) end
-end
-return out
-)lua";
-
 // Cleanup lease scripts use the registry slot.
 
 const char* const kAcquireCleanupLeaseScript = R"lua(
