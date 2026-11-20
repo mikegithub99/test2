@@ -172,48 +172,6 @@ class RedisJobStatus final
    void refreshHeartbeat(std::int64_t ttlSeconds);
 
  private:
-   enum class RegistrationResult : std::int64_t
-   {
-      /** Server was already present in the registry. */
-      AlreadyPresent = 0,
-      /** Server was newly added to the registry. */
-      Added = 1
-   };
-
-   enum class ActivationResult : std::int64_t
-   {
-      /** Job already has a lifecycle state. */
-      AlreadyHasLifecycleState = 0,
-      /** Job was activated successfully. */
-      Activated = 1
-   };
-
-   enum class HeartbeatResult : std::int64_t
-   {
-      /** Heartbeat refresh was rejected. */
-      Rejected = 0,
-      /** Heartbeat was refreshed successfully. */
-      Refreshed = 1
-   };
-
-   /**
-    * @brief Converts a lifecycle script result, rejecting unknown values.
-    * @param value Numeric result returned by the lifecycle Lua script.
-    */
-   static Result resultFromScript(std::int64_t value);
-   /**
-    * @brief Converts a registry script result, rejecting unknown values.
-    */
-   static RegistrationResult registrationResultFromScript(std::int64_t value);
-   /**
-    * @brief Converts an activation script result, rejecting unknown values.
-    */
-   static ActivationResult activationResultFromScript(std::int64_t value);
-   /**
-    * @brief Converts a heartbeat script result, rejecting unknown values.
-    */
-   static HeartbeatResult heartbeatResultFromScript(std::int64_t value);
-
    /**
     * @brief Validates caller-supplied registration metadata.
     * @param serverTypeMetadata Metadata merged into the server-type summary.
@@ -242,21 +200,6 @@ class RedisJobStatus final
     */
    explicit RedisJobStatus(ConfigProvider provider);
 
-   /**
-    * @brief Returns the Redis representation of a lifecycle state.
-    * @param state Lifecycle state to convert.
-    */
-   static std::string stateName(State state);
-   /**
-    * @brief Validates a server type or server identifier.
-    * @param value Identifier value to validate.
-    * @param name Name used in validation error messages.
-    * @param isServerType Selects server-type-specific validation when true.
-    */
-   static void validateIdentifier(
-         const std::string& value,
-         const char* name,
-         bool isServerType = false);
    /**
     * @brief Validates the configured server identity and supplied job identifier.
     * @param jobId Application job identifier to validate.
