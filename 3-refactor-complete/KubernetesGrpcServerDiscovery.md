@@ -259,6 +259,209 @@ retry after a timeout even when the first request was processed.
   a server registration is current. DNS resolving successfully does not prove
   that the process is alive or owns a job.
 
+
+## Two-Service pattern: load-balanced creation and direct server routing
+
+The same StatefulSet pods can be exposed through **two Kubernetes Services**.
+This does not require two sets of gRPC servers or two listeners. Both Services
+select the same pods and expose the same gRPC port, but they serve different
+client-routing purposes:
+
+- A normal **ClusterIP Service** gives job-creation clients one stable DNS
+  name. Kubernetes routes connections to eligible backend pods.
+- A **headless Service** gives each StatefulSet pod an individually
+  addressable DNS name. The server advertises its own pod-specific endpoint
+  in registration metadata so cancel and delete requests can reach the
+  process that owns the job.
+
+For the example namespace and names used in this document:
+
+| Purpose | DNS target |
+| --- | --- |
+| Create jobs through any eligible replica | `job-server.jobs.svc.cluster.local:50051` |
+| Directly reach pod 0 | `job-server-0.job-server-headless.jobs.svc.cluster.local:50051` |
+| Directly reach pod 1 | `job-server-1.job-server-headless.jobs.svc.cluster.local:50051` |
+| Directly reach pod 2 | `job-server-2.job-server-headless.jobs.svc.cluster.local:50051` |
+
+### Service definitions
+
+Both Services use the same selector, `app: job-server`, and the same port.
+The normal Service has a ClusterIP; the headless Service explicitly sets
+`clusterIP: None`.
+
+```yaml
+# Stable load-balanced entry point for job creation.
+apiVersion: v1
+kind: Service
+metadata:
+  name: job-server
+  namespace: jobs
+spec:
+  type: ClusterIP
+  selector:
+    app: job-server
+  ports:
+    - name: grpc
+      protocol: TCP
+      port: 50051
+      targetPort: grpc
+
+---
+# Per-pod DNS discovery for targeted cancel and delete.
+apiVersion: v1
+kind: Service
+metadata:
+  name: job-server-headless
+  namespace: jobs
+spec:
+  clusterIP: None
+  selector:
+    app: job-server
+  ports:
+    - name: grpc
+      protocol: TCP
+      port: 50051
+      targetPort: grpc
+```
+
+The StatefulSet's `spec.serviceName` must be `job-server-headless`.
+Its pod template must carry the matching `app: job-server` label, and the
+container must declare a named port `grpc` so the Services' `targetPort:
+grpc` resolves correctly.
+
+### StatefulSet pod configuration and environment
+
+The following is the relevant portion of a StatefulSet. It shows the
+governing headless Service, three example replicas, the named gRPC container
+port, and environment variables supplied to the C++ process.
+
+```yaml
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: job-server
+  namespace: jobs
+spec:
+  serviceName: job-server-headless
+  replicas: 3
+  selector:
+    matchLabels:
+      app: job-server
+  template:
+    metadata:
+      labels:
+        app: job-server
+    spec:
+      containers:
+        - name: job-server
+          image: your-job-server-image
+          ports:
+            - name: grpc
+              containerPort: 50051
+              protocol: TCP
+          env:
+            # Downward API: values are specific to this pod.
+            - name: POD_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
+            - name: POD_NAMESPACE
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.namespace
+
+            # Shared endpoint configuration.
+            - name: GRPC_SERVICE_NAME
+              value: "job-server-headless"
+            - name: GRPC_PORT
+              value: "50051"
+            - name: K8S_CLUSTER_DOMAIN
+              value: "cluster.local"
+```
+
+The cluster domain is commonly `cluster.local`, but it is configurable in
+Kubernetes. Set `K8S_CLUSTER_DOMAIN` to the actual cluster domain if yours
+differs. The C++ process does not need to read or parse YAML; Kubernetes
+injects these environment variables into the container.
+
+### Constructing the advertised endpoint in C++
+
+The process uses its pod name, namespace, headless Service name, cluster
+domain, and common gRPC port to construct its own endpoint. For example,
+`job-server-1` advertises:
+
+```text
+job-server-1.job-server-headless.jobs.svc.cluster.local:50051
+```
+
+An example helper is:
+
+```cpp
+#include <cstdlib>
+#include <stdexcept>
+#include <string>
+
+std::string getRequiredEnv(const char* name)
+{
+    const char* value = std::getenv(name);
+    if (value == nullptr || *value == '\\0')
+    {
+        throw std::runtime_error(
+            std::string("Missing environment variable: ") + name);
+    }
+
+    return value;
+}
+
+std::string getGrpcTarget()
+{
+    const auto podName = getRequiredEnv("POD_NAME");
+    const auto podNamespace = getRequiredEnv("POD_NAMESPACE");
+    const auto serviceName = getRequiredEnv("GRPC_SERVICE_NAME");
+    const auto port = getRequiredEnv("GRPC_PORT");
+    const auto clusterDomain = getRequiredEnv("K8S_CLUSTER_DOMAIN");
+
+    return podName + "." + serviceName + "." +
+           podNamespace + ".svc." + clusterDomain + ":" + port;
+}
+```
+
+The gRPC server still listens on all interfaces at
+`0.0.0.0:50051` (or the configured `GRPC_PORT`). The pod-specific DNS
+name is the advertised address used by other clients; it is not the local
+listen address. Every pod can use the same port because each pod has its own
+network namespace and IP address.
+
+### Which Service each operation uses
+
+| Operation | Target | Reason |
+| --- | --- | --- |
+| Create job | `job-server.jobs.svc.cluster.local:50051` | Let Kubernetes select an eligible server replica. |
+| Cancel job | The `grpcTarget` registered for the owning `serverId` | Reach the exact server process that owns the job. |
+| Delete job | The `grpcTarget` registered for the owning `serverId` | Reach the exact server process that owns the job. |
+
+The job-creation request goes to the normal Service. The selected server
+creates the job and its `serverId` remains the owner recorded in the existing
+job metadata. For cancel or delete, the requester looks up that owner
+`serverId` in the registration metadata and connects to its registered
+pod-specific `grpcTarget`. The cancel/delete RPC should carry both
+`serverId` and `jobId`; the receiving process validates that the requested
+server ID matches its own current process ID and that it owns the job.
+
+**Important gRPC load-balancing detail:** a Kubernetes Service distributes
+TCP connections, not individual gRPC RPCs. If a client reuses a long-lived
+gRPC channel, many job-creation RPCs can continue to reach the same pod.
+If distribution across replicas is important, account for channel reuse and
+connection behavior, or use an appropriate gRPC client-side load-balancing
+policy and resolver. A single ClusterIP target does not guarantee
+round-robin distribution of every RPC.
+
+The two-Service design preserves the existing ownership and cleanup model:
+the normal Service is only the entry point for new job-creation connections;
+the per-pod endpoint in registration metadata is the route for targeted
+operations. DNS is connectivity information, while the globally unique
+`serverId` remains the process identity.
+
 ## Summary
 
 Use a StatefulSet plus a headless Service to give every pod a predictable,
