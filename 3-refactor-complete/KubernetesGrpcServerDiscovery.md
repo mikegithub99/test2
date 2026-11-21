@@ -472,3 +472,65 @@ C++. Continue to use the globally unique per-process `serverId` as the
 ownership identity in Redis and in cancel/delete RPCs. This adds Kubernetes
 connectivity without changing the fundamental server identity or job
 lifecycle model.
+
+
+## Application state, durable jobs, and server restart recovery
+
+The server processes are intended to be disposable. The application can have stateful jobs without requiring the gRPC worker process itself to be a stateful, irreplaceable server. The important distinction is between durable job information, Redis runtime coordination, and transient execution state.
+
+### The three state layers
+
+The architecture has three relevant state layers:
+
+1. **SQL: durable persisted jobs.** Some jobs are persisted in SQL so their definitions or durable job information survive the lifetime of the server process that originally ran them.
+2. **Redis: runtime execution and ownership.** RedisJobStatus tracks the current server registration, job creation/pending state, runtime job ownership, heartbeat/liveness, and the existing completion and cleanup lifecycle.
+3. **The server process: transient execution state.** A running process holds the in-memory state needed to execute its currently assigned jobs and handle its gRPC operations. That state is tied to the lifetime of the process and is not the durable source of truth for persisted jobs.
+
+This means the system is not literally free of state inside a process. Rather, it follows the 12-Factor architectural principle that durable state should live outside an individual process, allowing the process to be replaced.
+
+### Startup and recreation of persisted jobs
+
+On server startup, the server performs its normal registration and recovery work. In particular:
+
+- It starts as a new process and generates a new globally unique `serverId`.
+- It constructs its own gRPC target and performs the normal RedisJobStatus `registerServer` operation.
+- It reads the jobs that should be recreated from SQL.
+- Each recreated job is instantiated as a new runtime job and receives a **new runtime `jobId`**.
+- The server uses the normal RedisJobStatus `createPending` flow for each recreated runtime job, so the job enters the ordinary Redis-tracked lifecycle rather than bypassing job status management.
+
+The SQL-persisted job and the Redis runtime job are therefore related, but they are not the same identity. Recreating a persisted job does not mean resuming the old in-memory execution instance or reusing its previous runtime `jobId`. It creates a new runtime execution associated with the durable SQL job.
+
+The exact ordering and failure handling around registration, SQL recovery, and `createPending` should follow the application's startup implementation. The important architectural requirement is that recreated jobs use the same registration, pending, ownership, and lifecycle mechanisms as newly created jobs.
+
+### Keep the identities distinct
+
+There are four identities/locators with different purposes and lifetimes:
+
+| Value | Meaning | Lifetime |
+| --- | --- | --- |
+| SQL job identity | Identifies the durable job record or business-level job | Persists across server restarts |
+| Redis/runtime `jobId` | Identifies one particular execution instance | New value when the job is recreated |
+| `serverId` | Identifies one running server process and its ownership | New globally unique value for each process start |
+| `grpcTarget` | Locates the process over the network | Address for the current pod/process endpoint; not an identity |
+
+Do not use the SQL job identity as a substitute for the runtime `jobId`, and do not use the pod DNS name as a substitute for `serverId`. These separate identities make it possible to distinguish an old execution from a recreated execution, and an old server process from its replacement.
+
+If cancel/delete requests can outlive a runtime job, they should be tied to the intended runtime `jobId` (and owning `serverId`), not just the durable SQL job identity. That prevents a delayed request for an earlier execution from accidentally affecting a newer recreation of the same persisted job.
+
+### Recovery and duplicate-execution considerations
+
+Recreating persisted jobs on startup introduces a recovery/concurrency requirement: the system must determine which server is allowed to recreate and run each durable SQL job.
+
+If multiple server instances can scan the same SQL records during startup, they could otherwise recreate the same persisted job more than once, each with a different runtime `jobId`. The recovery process therefore needs an authoritative claim, lease, lock, or equivalent coordination rule that prevents concurrent duplicate recreation. The appropriate mechanism depends on the existing SQL and Redis design; this document does not assume that a particular claim mechanism is already implemented.
+
+The recovery flow should also define what happens if a process fails between reading a SQL job, registering a pending runtime job in Redis, and beginning execution. Retries should be safe, and the durable SQL record and runtime Redis record should not be left in an ambiguous state. Where practical, use an idempotency key based on the durable SQL job identity plus a recovery or execution generation, while still assigning a fresh runtime `jobId` to each new execution.
+
+The existing heartbeat and three-phase cleanup process remains responsible for detecting a server that has stopped heartbeating and cleaning up its old runtime registration and jobs. SQL persistence provides the information needed to recreate eligible jobs; Redis provides the live execution and ownership view. A recreated job is a new runtime execution and should be registered and tracked as such.
+
+### What this means for the 12-Factor description
+
+A useful description of the overall system is:
+
+> Disposable gRPC worker processes execute durable jobs. SQL stores the persisted job information used for recovery. Redis coordinates server registration, heartbeats, runtime job creation and pending state, ownership, and lifecycle cleanup. When a server starts, it registers as a new process and recreates eligible SQL-persisted jobs as new runtime executions with new job IDs through the normal RedisJobStatus lifecycle.
+
+The workers are therefore **stateless with respect to durable application state**, even though they maintain transient in-memory execution state and participate in stateful job workflows. The StatefulSet is used to provide stable per-pod network addressing for targeted gRPC operations; it does not make the worker's local process state durable or require a stateful server filesystem.
